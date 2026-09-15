@@ -156,6 +156,27 @@ function download(naam, inhoud, type) {
   URL.revokeObjectURL(url);
 }
 
+const CATEGORIEEN = [
+  "Camera-apparatuur",
+  "Licht en lampen",
+  "Brandingspullen",
+  "Achtergrond en decoratie",
+  "Overig",
+];
+
+function raadCategorie(tekst) {
+  const t = (tekst || "").toLowerCase();
+  if (/camera|lens|objectief|body|statief|tripod|geheugenkaart|sd-?kaart|accu|batterij|gimbal|drone|sony|canon|nikon|fuji|sigma|tamron|mm\b|flitser|shutter/.test(t))
+    return "Camera-apparatuur";
+  if (/lamp|licht|light|softbox|paraplu|reflector|godox|profoto|elinchrom|led|flits|statief.*licht/.test(t))
+    return "Licht en lampen";
+  if (/cadeaubon|enveloppe|envelop|visitekaart|sticker|verpakking|doosje|lint|drukwerk|briefpapier|usb|logo/.test(t))
+    return "Brandingspullen";
+  if (/achtergrond|backdrop|doek|decor|vaas|bloem|kleed|kruk|stoel|bank|meubel|rekwisiet|prop/.test(t))
+    return "Achtergrond en decoratie";
+  return "Overig";
+}
+
 const TARIEVEN = [
   { v: 21, l: "21 procent" },
   { v: 9, l: "9 procent" },
@@ -992,6 +1013,20 @@ function App() {
       .reduce((s, f) => s + (Number(f.bedrag) || 0), 0);
   }, [data.facturen]);
 
+  const uitgavenJaar = useMemo(() => {
+    const jaar = new Date().getFullYear();
+    return data.uitgaven
+      .filter((u) => new Date(u.datum).getFullYear() === jaar)
+      .reduce((s, u) => s + (Number(u.bedrag) || 0), 0);
+  }, [data.uitgaven]);
+
+  const kostenJaar = useMemo(() => {
+    const jaar = new Date().getFullYear();
+    return data.uitgaven
+      .filter((u) => new Date(u.datum).getFullYear() === jaar && u.zakelijk !== false)
+      .reduce((s, u) => s + (Number(u.bedrag) || 0) - btwUitIncl(u.bedrag, u.tarief), 0);
+  }, [data.uitgaven]);
+
   const komendeShoots = useMemo(
     () =>
       data.shoots
@@ -1029,7 +1064,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 8
+          versie 9
         </div>
 
         <header className="mb-7">
@@ -1087,6 +1122,8 @@ function App() {
             openBedrag={openBedrag}
             openstaand={openstaand}
             omzetJaar={omzetJaar}
+            uitgavenJaar={uitgavenJaar}
+            kostenJaar={kostenJaar}
             komendeShoots={komendeShoots}
             spullenWaarde={spullenWaarde}
             data={data}
@@ -1149,6 +1186,8 @@ function Overzicht({
   openBedrag,
   openstaand,
   omzetJaar,
+  uitgavenJaar,
+  kostenJaar,
   komendeShoots,
   spullenWaarde,
   data,
@@ -1239,6 +1278,30 @@ function Overzicht({
           <Bedrag label={`Omzet ${new Date().getFullYear()}`} waarde={euro(omzetJaar)} />
         </Print>
       </div>
+
+      <Print onderschrift="Omzet en kosten allebei zonder btw, zodat je ze eerlijk kunt vergelijken. Dit is een indicatie, niet je winst.">
+        <div className="flex gap-8">
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Uitgaven {new Date().getFullYear()}
+            </div>
+            <div className="text-2xl mt-1" style={{ ...display, color: C.ink }}>
+              {euro(uitgavenJaar)}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Omzet min kosten
+            </div>
+            <div
+              className="text-2xl mt-1"
+              style={{ ...display, color: omzetJaar - kostenJaar >= 0 ? C.goed : C.open }}
+            >
+              {euro(omzetJaar - kostenJaar)}
+            </div>
+          </div>
+        </div>
+      </Print>
 
       <h2 className="text-2xl mb-1 mt-8" style={{ ...display, color: C.ink }}>
         Volgende shoots
@@ -1514,7 +1577,7 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
               naam: f.omschrijving || f.naam,
               prijs: f.bedrag,
               datum: f.datum,
-              categorie: f.categorie || "",
+              categorie: raadCategorie(`${f.omschrijving} ${f.naam}`),
               serienummer: "",
               garantie: "",
             },
@@ -1528,11 +1591,30 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
   const totaalTerug = uitgaven
     .filter((u) => u.zakelijk !== false)
     .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0);
+  const totaalUit = uitgaven.reduce((s, u) => s + (Number(u.bedrag) || 0), 0);
 
   return (
     <div>
       <Print onderschrift="Bewaar je bonnetjes, je boekhouder vraagt erom.">
-        <Bedrag label="Btw betaald op inkopen, alles bij elkaar" waarde={euro(totaalTerug)} kleur={C.goed} />
+        <Bedrag label="Totaal uitgegeven" waarde={euro(totaalUit)} groot />
+        <div className="flex gap-8 mt-4 pt-4" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Btw terug te vragen
+            </div>
+            <div className="text-lg" style={{ ...display, color: C.goed }}>
+              {euro(totaalTerug)}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Kosten zonder btw
+            </div>
+            <div className="text-lg" style={{ ...display, color: C.ink }}>
+              {euro(totaalUit - totaalTerug)}
+            </div>
+          </div>
+        </div>
       </Print>
 
       <Sleepvak
@@ -1559,7 +1641,7 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
                 naam: r.omschrijving || r.naam,
                 prijs: r.bedrag,
                 datum: r.datum,
-                categorie: r.categorie || "",
+                categorie: raadCategorie(`${r.omschrijving} ${r.naam}`),
                 serienummer: "",
                 garantie: "",
               })),
@@ -1675,10 +1757,12 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
         <div key={groep.sleutel}>
       <KwartaalKop
         kw={groep.kw}
-        totaal={groep.items
-          .filter((u) => u.zakelijk !== false)
-          .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0)}
-        bijschrift="btw terug te vragen"
+        totaal={groep.items.reduce((s, u) => s + (Number(u.bedrag) || 0), 0)}
+        bijschrift={`uitgegeven, btw ${euro(
+          groep.items
+            .filter((u) => u.zakelijk !== false)
+            .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0)
+        )} terug`}
       />
       {groep.items.map((u) => (
         <Regel
@@ -1981,7 +2065,7 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
     naam: "",
     prijs: "",
     datum: vandaag(),
-    categorie: "",
+    categorie: CATEGORIEEN[0],
     serienummer: "",
     garantie: "",
   };
@@ -1990,11 +2074,16 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
 
   const opslaan = () => {
     if (!f.naam.trim()) return;
-    voegToe("spullen", f);
+    voegToe("spullen", { ...f, categorie: f.categorie || raadCategorie(f.naam) });
     setForm(null);
   };
 
-  const gesorteerd = [...spullen].sort((a, b) => (Number(b.prijs) || 0) - (Number(a.prijs) || 0));
+  const groepen = CATEGORIEEN.map((c) => ({
+    naam: c,
+    items: spullen
+      .filter((s) => (s.categorie || raadCategorie(s.naam)) === c)
+      .sort((a, b) => (Number(b.prijs) || 0) - (Number(a.prijs) || 0)),
+  })).filter((g) => g.items.length);
 
   return (
     <div>
@@ -2039,12 +2128,14 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
           </div>
           <div className="flex gap-3">
             <div className="flex-1">
-              <Veld label="Categorie">
-                <Input
-                  value={f.categorie}
-                  onChange={(e) => zet("categorie", e.target.value)}
-                  placeholder="Camera, lens, licht"
-                />
+              <Veld label="Soort">
+                <Select value={f.categorie} onChange={(e) => zet("categorie", e.target.value)}>
+                  {CATEGORIEEN.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </Select>
               </Veld>
             </div>
             <div className="flex-1">
@@ -2081,7 +2172,25 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
         </p>
       )}
 
-      {gesorteerd.map((s) => {
+      {groepen.map((groep) => (
+        <div key={groep.naam}>
+      <div
+        className="flex items-baseline justify-between pt-6 pb-2"
+        style={{ borderBottom: `1px solid ${C.ink}` }}
+      >
+        <div className="text-xl" style={{ ...display, color: C.ink }}>
+          {groep.naam}
+        </div>
+        <div className="text-right">
+          <div className="text-base" style={{ ...display, color: C.ink }}>
+            {euro(groep.items.reduce((s, x) => s + (Number(x.prijs) || 0), 0))}
+          </div>
+          <div className="text-sm" style={{ ...ui, color: C.soft }}>
+            {groep.items.length} stuk{groep.items.length > 1 ? "s" : ""}
+          </div>
+        </div>
+      </div>
+      {groep.items.map((s) => {
         const loopt = s.garantie && new Date(s.garantie) > new Date();
         return (
           <Regel
@@ -2110,6 +2219,8 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
           />
         );
       })}
+        </div>
+      ))}
     </div>
   );
 }
