@@ -191,7 +191,8 @@ function naarGetal(s) {
 
 function bedragen(regel) {
   const uit = [];
-  for (const m of regel.matchAll(/\d{1,3}(?:[.\s]\d{3})*[.,]\d{2}(?!\d)/g)) uit.push(naarGetal(m[0]));
+  for (const m of regel.matchAll(/\d{1,3}(?:\.\d{3})*,\d{2}(?!\d)|\d{1,3}(?:,\d{3})*\.\d{2}(?!\d)|\d+[.,]\d{2}(?!\d)/g))
+    uit.push(naarGetal(m[0]));
   if (!uit.length) {
     for (const m of regel.matchAll(/€\s*(\d{1,7})(?![\d.,])/g)) uit.push(naarGetal(m[1]));
   }
@@ -203,15 +204,19 @@ const MAANDEN = { januari:1, februari:2, maart:3, april:4, mei:5, juni:6, juli:7
   aug:8, sep:9, sept:9, okt:10, nov:11, dec:12 };
 
 function vindDatum(tekst) {
-  const bij = tekst.match(/(?:factuurdatum|datum|invoice date|date)\s*[:\s]\s*([^\n]{6,30})/i);
-  const bron = bij ? bij[1] + "\n" + tekst : tekst;
-  let m = bron.match(/(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = bron.match(/(\d{1,2})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{4})/);
-  if (m) return `${m[3]}-${String(m[2]).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
-  m = bron.match(/(\d{1,2})\s+([a-zA-Z]{3,10})\.?\s+(\d{4})/);
-  if (m && MAANDEN[m[2].toLowerCase()]) {
-    return `${m[3]}-${String(MAANDEN[m[2].toLowerCase()]).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+  const bij = tekst.match(/(?:factuurdatum|factuur datum|datum|invoice date|date)[^\n]{0,30}/i);
+  const bronnen = bij ? [bij[0], tekst] : [tekst];
+  for (const bron of bronnen) {
+    let m = bron.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = bron.match(/(\d{1,2})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{4})/);
+    if (m) return `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+    m = bron.match(/(\d{1,2})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{2})(?!\d)/);
+    if (m) return `20${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+    m = bron.match(/(\d{1,2})\s+([a-zA-Z]{3,10})\.?\s+(\d{4})/);
+    if (m && MAANDEN[m[2].toLowerCase()]) {
+      return `${m[3]}-${String(MAANDEN[m[2].toLowerCase()]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+    }
   }
   return null;
 }
@@ -231,6 +236,28 @@ function vindNummer(tekst) {
 }
 
 /* kern: alle btw-regels verzamelen, niet alleen de eerste */
+function zoekDrieluik(regels) {
+  let beste = null;
+  regels.forEach((r) => {
+    const b = bedragen(r);
+    if (b.length < 3) return;
+    const max = Math.max(...b);
+    if (max < 1) return;
+    for (let i = 0; i < b.length; i++) {
+      for (let j = 0; j < b.length; j++) {
+        if (i === j) continue;
+        if (Math.abs(b[i] + b[j] - max) < 0.02 && b[i] > 0 && b[j] > 0 && b[i] !== max && b[j] !== max) {
+          const excl = Math.max(b[i], b[j]);
+          const btw = Math.min(b[i], b[j]);
+          const p = Math.round((btw / excl) * 100);
+          if ([21, 9, 0].includes(p)) beste = { excl, btw, incl: max, tarief: p };
+        }
+      }
+    }
+  });
+  return beste;
+}
+
 function leesBedragen(tekst) {
   const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
   let incl = null, excl = null;
@@ -281,6 +308,18 @@ function leesBedragen(tekst) {
     if (alle.length) incl = Math.max(...alle);
   }
   if (excl === null && incl !== null && btwTotaal !== null && btwTotaal < incl) excl = incl - btwTotaal;
+
+  const d = zoekDrieluik(regels);
+  if (d) {
+    return {
+      incl: d.incl,
+      excl: d.excl,
+      btwTotaal: d.btw,
+      tarieven: [d.tarief],
+      verlegd,
+      meerdereTarieven: false,
+    };
+  }
 
   return { incl, excl, btwTotaal, tarieven, verlegd, meerdereTarieven: tarieven.length > 1 };
 }
@@ -848,7 +887,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 5
+          versie 6
         </div>
 
         <header className="mb-7">
