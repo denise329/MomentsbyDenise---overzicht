@@ -370,6 +370,56 @@ function leesFactuur(tekst, bestandsnaam) {
   };
 }
 
+function leesRegelitems(tekst) {
+  const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
+  const heeftLetters = (s) => (s.match(/[a-zA-Z]/g) || []).length >= 3;
+  const items = [];
+  const gebruikt = new Set();
+
+  regels.forEach((r, i) => {
+    const laag = r.toLowerCase();
+    if (/totaal|subtotaal|btw bedrag|te betalen|factuur|datum/.test(laag)) return;
+    const b = bedragen(r);
+    if (b.length < 2) return;
+    const pos = r.search(/\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2}/);
+    if (pos < 0) return;
+
+    let oms = r.slice(0, pos).replace(/^\d{4,}\s*/, "").replace(/[|\-\s]+$/, "").trim();
+
+    if (!heeftLetters(oms)) {
+      // omschrijving staat op een eigen regel, dat gebeurt als de tekst te lang is
+      if (!/^\d{4,}\s/.test(r)) return;
+      oms = "";
+      for (const j of [i - 1, i + 1]) {
+        const buur = regels[j];
+        if (!buur || gebruikt.has(j)) continue;
+        if (bedragen(buur).length) continue;
+        if (!heeftLetters(buur)) continue;
+        if (/totaal|btw|factuur|artikelnr|omschrijving/i.test(buur)) continue;
+        oms = buur.replace(/[(\[][^)\]]*$/, "").trim();
+        gebruikt.add(j);
+        break;
+      }
+      if (!oms) return;
+    }
+    items.push({ omschrijving: oms, bedrag: b[b.length - 1] });
+  });
+  return items;
+}
+
+function regelsNaarIncl(items, b) {
+  if (!items.length) return [];
+  const som = items.reduce((s, x) => s + x.bedrag, 0);
+  const factor =
+    b.excl !== null && Math.abs(som - b.excl) < 0.05 && b.incl
+      ? b.incl / b.excl
+      : 1;
+  return items.map((x) => ({
+    omschrijving: x.omschrijving,
+    bedrag: Math.round(x.bedrag * factor * 100) / 100,
+  }));
+}
+
 function leesUitgave(tekst, bestandsnaam) {
   const b = leesBedragen(tekst);
   const { tarief, zeker } = bepaalTarief(b);
@@ -387,6 +437,9 @@ function leesUitgave(tekst, bestandsnaam) {
 
   return {
     naam: leverancier,
+    omschrijving: "",
+    apparatuur: false,
+    _regels: regelsNaarIncl(leesRegelitems(tekst, tarief), b),
     bedrag: b.incl !== null ? Math.round(b.incl * 100) / 100 : "",
     tarief,
     datum: vindDatum(tekst) || new Date().toISOString().slice(0, 10),
@@ -541,6 +594,15 @@ function Controle({ soort, rijen, setRijen, opslaan }) {
               onChange={(e) => zet(i, factuur ? "klant" : "naam", e.target.value)}
               placeholder={factuur ? "Klantnaam" : "Van wie"}
             />
+            {!factuur && (
+              <div className="mt-2">
+                <Input
+                  value={r.omschrijving || ""}
+                  onChange={(e) => zet(i, "omschrijving", e.target.value)}
+                  placeholder="Wat is het, bijvoorbeeld Sony A7 IV"
+                />
+              </div>
+            )}
             <div className="flex gap-2 mt-2">
               <Input type="date" value={r.datum} onChange={(e) => zet(i, "datum", e.target.value)} />
               <Input
@@ -558,13 +620,46 @@ function Controle({ soort, rijen, setRijen, opslaan }) {
                 ))}
               </Select>
             </div>
-            <div className="flex items-center justify-between mt-2">
-              <span className="text-sm" style={{ ...ui, color: C.soft }}>
-                Btw {euro(btw)}
-                {factuur
-                  ? `, totaal ${euro(Number(r.bedrag || 0) + btw)}`
-                  : `, kwartaal ${kwartaalLabel(kwartaalVan(r.datum))}`}
-              </span>
+            <div className="text-sm mt-2" style={{ ...ui, color: C.soft }}>
+              Btw {euro(btw)}
+              {factuur
+                ? `, totaal ${euro(Number(r.bedrag || 0) + btw)}`
+                : `, kwartaal ${kwartaalLabel(kwartaalVan(r.datum))}`}
+            </div>
+            <div className="flex items-center gap-3 mt-2 flex-wrap">
+              {!factuur && (
+                <label
+                  className="text-sm flex items-center gap-2 cursor-pointer"
+                  style={{ ...ui, color: r.apparatuur ? C.ink : C.soft }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!r.apparatuur}
+                    onChange={() => zet(i, "apparatuur", !r.apparatuur)}
+                  />
+                  Zet dit ook bij apparatuur
+                </label>
+              )}
+              {!factuur && r._regels && r._regels.length > 1 && (
+                <Knop
+                  klein
+                  onClick={() =>
+                    setRijen([
+                      ...rijen.slice(0, i),
+                      ...r._regels.map((x) => ({
+                        ...r,
+                        omschrijving: x.omschrijving,
+                        bedrag: x.bedrag,
+                        _regels: null,
+                      })),
+                      ...rijen.slice(i + 1),
+                    ])
+                  }
+                >
+                  Splitsen in {r._regels.length} regels
+                </Knop>
+              )}
+              <div className="flex-1" />
               <Knop klein soort="weg" onClick={() => weg(i)}>
                 Weghalen
               </Knop>
@@ -800,6 +895,18 @@ function App() {
       ],
     });
 
+  const voegGecombineerdToe = (paren) => {
+    const nieuw = { ...data };
+    Object.entries(paren).forEach(([soort, items]) => {
+      if (!items || !items.length) return;
+      nieuw[soort] = [
+        ...nieuw[soort],
+        ...items.map((i) => ({ ...i, id: Math.random().toString(36).slice(2, 9) })),
+      ];
+    });
+    bewaar(nieuw);
+  };
+
   const wijzig = (soort, id, patch) =>
     bewaar({
       ...data,
@@ -887,7 +994,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 6
+          versie 7
         </div>
 
         <header className="mb-7">
@@ -970,6 +1077,7 @@ function App() {
             setForm={setForm}
             voegToe={voegToe}
             voegMeerToe={voegMeerToe}
+            voegGecombineerdToe={voegGecombineerdToe}
             verwijder={verwijder}
           />
         )}
@@ -1346,22 +1454,38 @@ function Facturen({ facturen, form, setForm, voegToe, voegMeerToe, wijzig, verwi
 }
 
 /* ---------- uitgaven ---------- */
-function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, verwijder }) {
+function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombineerdToe, verwijder }) {
   const [concepten, setConcepten] = useState([]);
   const leeg = {
     naam: "",
+    omschrijving: "",
     bedrag: "",
     tarief: 21,
     categorie: "",
     datum: vandaag(),
     zakelijk: true,
+    apparatuur: false,
   };
   const f = form || leeg;
   const zet = (k, v) => setForm({ ...f, [k]: v });
 
   const opslaan = () => {
     if (!f.naam.trim() || !f.bedrag) return;
-    voegToe("uitgaven", f);
+    voegGecombineerdToe({
+      uitgaven: [f],
+      spullen: f.apparatuur
+        ? [
+            {
+              naam: f.omschrijving || f.naam,
+              prijs: f.bedrag,
+              datum: f.datum,
+              categorie: f.categorie || "",
+              serienummer: "",
+              garantie: "",
+            },
+          ]
+        : [],
+    });
     setForm(null);
   };
 
@@ -1391,7 +1515,20 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, verwijder }) 
         rijen={concepten}
         setRijen={setConcepten}
         opslaan={(rijen) => {
-          voegMeerToe("uitgaven", rijen.map(({ _bestand, _letop, ...r }) => r));
+          const schoon = rijen.map(({ _bestand, _letop, _regels, ...r }) => r);
+          voegGecombineerdToe({
+            uitgaven: schoon,
+            spullen: schoon
+              .filter((r) => r.apparatuur)
+              .map((r) => ({
+                naam: r.omschrijving || r.naam,
+                prijs: r.bedrag,
+                datum: r.datum,
+                categorie: r.categorie || "",
+                serienummer: "",
+                garantie: "",
+              })),
+          });
           setConcepten([]);
         }}
       />
@@ -1404,11 +1541,18 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, verwijder }) 
 
       {form && (
         <Print>
-          <Veld label="Waaraan">
+          <Veld label="Van wie">
             <Input
               value={f.naam}
               onChange={(e) => zet("naam", e.target.value)}
-              placeholder="Lens, reiskosten, softwareabonnement"
+              placeholder="CEWE, vidaXL, Coolblue"
+            />
+          </Veld>
+          <Veld label="Wat is het">
+            <Input
+              value={f.omschrijving}
+              onChange={(e) => zet("omschrijving", e.target.value)}
+              placeholder="Sony A7 IV, fotoboeken, benzine"
             />
           </Veld>
           <div className="flex gap-3">
@@ -1459,6 +1603,17 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, verwijder }) 
               placeholder="Apparatuur, vervoer, software"
             />
           </Veld>
+          <label
+            className="flex items-center gap-2 mb-3 text-base cursor-pointer"
+            style={{ ...ui, color: C.ink }}
+          >
+            <input
+              type="checkbox"
+              checked={!!f.apparatuur}
+              onChange={() => zet("apparatuur", !f.apparatuur)}
+            />
+            Zet dit ook bij apparatuur
+          </label>
           <div className="py-3 mb-3 text-sm" style={{ ...ui, color: C.soft, borderTop: `1px solid ${C.line}` }}>
             Hiervan is{" "}
             <span style={{ color: C.ink }}>{euro(btwUitIncl(f.bedrag, f.tarief))}</span> btw
@@ -1493,8 +1648,8 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, verwijder }) 
       {groep.items.map((u) => (
         <Regel
           key={u.id}
-          titel={u.naam}
-          onder={`${datumKort(u.datum)}${u.categorie ? `, ${u.categorie}` : ""}${
+          titel={u.omschrijving || u.naam}
+          onder={`${u.omschrijving ? u.naam + ", " : ""}${datumKort(u.datum)}${u.categorie ? `, ${u.categorie}` : ""}${
             u.zakelijk === false ? ", privé" : `, btw ${euro(btwUitIncl(u.bedrag, u.tarief))}`
           }`}
           rechts={euro(u.bedrag)}
