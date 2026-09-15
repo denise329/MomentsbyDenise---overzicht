@@ -177,6 +177,13 @@ function raadCategorie(tekst) {
   return "Overig";
 }
 
+function isAbonnement(tekst) {
+  const t = (tekst || "").toLowerCase();
+  return /google|adobe|creative cloud|lightroom|photoshop|canva|dropbox|icloud|microsoft|office ?365|onedrive|notion|figma|zoom|slack|mailchimp|mailerlite|squarespace|wix|wordpress|hosting|domein|transip|strato|vimeo|spotify|moneybird|e-?boekhouden|kpn|ziggo|odido|vodafone|t-mobile|simpel|abonnement|subscription|maandelijks|licentie/.test(
+    t
+  );
+}
+
 const TARIEVEN = [
   { v: 21, l: "21 procent" },
   { v: 9, l: "9 procent" },
@@ -494,6 +501,7 @@ function leesUitgave(tekst, bestandsnaam) {
     naam: leverancier,
     omschrijving: "",
     apparatuur: false,
+    abonnement: isAbonnement(leverancier),
     _regels: kolommen.regels,
     _regelsOnzeker: !kolommen.zeker,
     bedrag: b.incl !== null ? Math.round(b.incl * 100) / 100 : "",
@@ -694,6 +702,19 @@ function Controle({ soort, rijen, setRijen, opslaan }) {
                     onChange={() => zet(i, "apparatuur", !r.apparatuur)}
                   />
                   Zet dit ook bij apparatuur
+                </label>
+              )}
+              {!factuur && (
+                <label
+                  className="text-sm flex items-center gap-2 cursor-pointer"
+                  style={{ ...ui, color: r.abonnement ? C.ink : C.soft }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!r.abonnement}
+                    onChange={() => zet(i, "abonnement", !r.abonnement)}
+                  />
+                  Dit is een abonnement
                 </label>
               )}
               {!factuur && r._regels && r._regels.length > 1 && (
@@ -1064,7 +1085,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 11
+          versie 12
         </div>
 
         <header className="mb-7">
@@ -1168,6 +1189,7 @@ function App() {
           <Spullen
             spullen={data.spullen}
             totaal={spullenWaarde}
+            uitgaven={data.uitgaven}
             form={form}
             setForm={setForm}
             voegToe={voegToe}
@@ -1564,6 +1586,7 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
     datum: vandaag(),
     zakelijk: true,
     apparatuur: false,
+    abonnement: false,
   };
   const f = form || leeg;
   const zet = (k, v) => setForm({ ...f, [k]: v });
@@ -1731,6 +1754,17 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, voegMeerToe, voegGecombine
               onChange={() => zet("apparatuur", !f.apparatuur)}
             />
             Zet dit ook bij apparatuur
+          </label>
+          <label
+            className="flex items-center gap-2 mb-3 text-base cursor-pointer"
+            style={{ ...ui, color: C.ink }}
+          >
+            <input
+              type="checkbox"
+              checked={!!f.abonnement}
+              onChange={() => zet("abonnement", !f.abonnement)}
+            />
+            Dit is een abonnement
           </label>
           <div className="py-3 mb-3 text-sm" style={{ ...ui, color: C.soft, borderTop: `1px solid ${C.line}` }}>
             Hiervan is{" "}
@@ -2061,7 +2095,7 @@ function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
 }
 
 /* ---------- spullen ---------- */
-function Spullen({ spullen, totaal, form, setForm, voegToe, wijzig, verwijder }) {
+function Spullen({ spullen, totaal, uitgaven, form, setForm, voegToe, wijzig, verwijder }) {
   const [open, setOpen] = useState([]);
   const isOpen = (naam) => open.includes(naam);
   const wissel = (naam) =>
@@ -2089,6 +2123,23 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, wijzig, verwijder })
       .filter((s) => (s.categorie || raadCategorie(s.naam)) === c)
       .sort((a, b) => (Number(b.prijs) || 0) - (Number(a.prijs) || 0)),
   })).filter((g) => g.items.length);
+
+  const hoortBijAbonnementen = (u) =>
+    u.abonnement === undefined ? isAbonnement(`${u.naam} ${u.omschrijving || ""}`) : u.abonnement;
+
+  const abonnementen = (() => {
+    const per = new Map();
+    (uitgaven || []).filter(hoortBijAbonnementen).forEach((u) => {
+      const sleutel = (u.naam || "onbekend").trim().toLowerCase();
+      if (!per.has(sleutel))
+        per.set(sleutel, { naam: u.naam, betalingen: 0, totaal: 0, laatste: u.datum });
+      const g = per.get(sleutel);
+      g.betalingen += 1;
+      g.totaal += Number(u.bedrag) || 0;
+      if (new Date(u.datum) > new Date(g.laatste)) g.laatste = u.datum;
+    });
+    return [...per.values()].sort((a, b) => b.totaal - a.totaal);
+  })();
 
   return (
     <div>
@@ -2263,6 +2314,63 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, wijzig, verwijder })
       })}
         </div>
       ))}
+
+      {abonnementen.length > 0 && (
+        <>
+          <button
+            onClick={() => wissel("Abonnementen")}
+            aria-expanded={isOpen("Abonnementen")}
+            className="w-full flex items-baseline justify-between pt-5 pb-2 cursor-pointer text-left"
+            style={{
+              background: "transparent",
+              border: "none",
+              borderBottom: `1px solid ${isOpen("Abonnementen") ? C.ink : C.line}`,
+            }}
+          >
+            <span className="text-xl flex items-baseline gap-2" style={{ ...display, color: C.ink }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  fontSize: 12,
+                  color: C.soft,
+                  transform: isOpen("Abonnementen") ? "rotate(90deg)" : "none",
+                  transition: "transform 120ms",
+                }}
+              >
+                ▶
+              </span>
+              Abonnementen
+            </span>
+            <span className="text-right">
+              <span className="text-base block" style={{ ...display, color: C.ink }}>
+                {euro(abonnementen.reduce((s, a) => s + a.totaal, 0))}
+              </span>
+              <span className="text-sm block" style={{ ...ui, color: C.soft }}>
+                {abonnementen.length} stuk{abonnementen.length > 1 ? "s" : ""}
+              </span>
+            </span>
+          </button>
+
+          {isOpen("Abonnementen") && (
+            <>
+              {abonnementen.map((a) => (
+                <Regel
+                  key={a.naam}
+                  titel={a.naam}
+                  onder={`${a.betalingen} betaling${a.betalingen > 1 ? "en" : ""}, laatste op ${datumKort(
+                    a.laatste
+                  )}`}
+                  rechts={euro(a.totaal)}
+                />
+              ))}
+              <p className="text-sm mt-3" style={{ ...display, fontStyle: "italic", color: C.soft }}>
+                Deze komen uit je uitgaven. Klopt er iets niet, haal dan het vinkje weg bij de uitgave
+                zelf.
+              </p>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
