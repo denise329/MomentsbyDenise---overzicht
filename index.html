@@ -55,7 +55,7 @@ const display = { fontFamily: "Georgia, 'Times New Roman', serif" };
 const ui = { fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif" };
 
 const KEY = "mbd-overzicht-v2";
-const LEEG = { facturen: [], uitgaven: [], shoots: [], spullen: [] };
+const LEEG = { facturen: [], uitgaven: [], shoots: [], spullen: [], opdrachten: [] };
 
 /* ---------- hulpjes ---------- */
 const euro = (n) =>
@@ -106,8 +106,76 @@ const utcStamp = (d) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, 
 
 function startEind(a) {
   const start = new Date(`${a.datum}T${a.tijd || "09:00"}`);
-  return { start, eind: new Date(start.getTime() + (Number(a.duur) || 120) * 60000) };
+  const minuten = a.uren ? Number(a.uren) * 60 : Number(a.duur) || 120;
+  return { start, eind: new Date(start.getTime() + minuten * 60000) };
 }
+
+const UREN = [1, 1.5, 2, 3, 4, 6, 8, 10];
+const uurTekst = (n) =>
+  Number(n) === 1 ? "1 uur" : `${String(n).replace(".", ",")} uur`;
+
+const SOORTEN = [
+  "Bruiloft",
+  "Familie of newborn",
+  "Zakelijk",
+  "Evenement",
+  "Anders",
+];
+
+const STANDAARDLIJSTEN = {
+  Bruiloft: [
+    "Kennismaking gehad",
+    "Offerte gestuurd",
+    "Contract getekend",
+    "Aanbetaling ontvangen",
+    "Draaiboek doorgenomen",
+    "Locatie bekeken",
+    "Accu's geladen en kaarten leeg",
+    "Reservecamera mee",
+    "Foto's geselecteerd",
+    "Nabewerking klaar",
+    "Galerij geleverd",
+    "Restfactuur gestuurd",
+  ],
+  "Familie of newborn": [
+    "Datum bevestigd",
+    "Wensen doorgenomen",
+    "Locatie en kleding besproken",
+    "Accu's geladen",
+    "Foto's geselecteerd",
+    "Nabewerking klaar",
+    "Galerij geleverd",
+    "Factuur gestuurd",
+  ],
+  Zakelijk: [
+    "Offerte gestuurd",
+    "Opdracht bevestigd",
+    "Briefing en shotlist",
+    "Locatie en tijden afgestemd",
+    "Accu's geladen",
+    "Foto's geselecteerd",
+    "Nabewerking klaar",
+    "Bestanden aangeleverd",
+    "Factuur gestuurd",
+  ],
+  Evenement: [
+    "Programma ontvangen",
+    "Tijden afgestemd",
+    "Accu's geladen en kaarten leeg",
+    "Contactpersoon ter plekke geregeld",
+    "Foto's geselecteerd",
+    "Nabewerking klaar",
+    "Bestanden aangeleverd",
+    "Factuur gestuurd",
+  ],
+  Anders: [
+    "Afspraken vastgelegd",
+    "Datum bevestigd",
+    "Werk uitgevoerd",
+    "Opgeleverd",
+    "Factuur gestuurd",
+  ],
+};
 
 function googleLink(a) {
   const { start, eind } = startEind(a);
@@ -1048,13 +1116,26 @@ function App() {
       .reduce((s, u) => s + (Number(u.bedrag) || 0) - btwUitIncl(u.bedrag, u.tarief), 0);
   }, [data.uitgaven]);
 
+  const alleAfspraken = useMemo(() => {
+    const los = (data.shoots || []).map((s) => ({ ...s, _bron: "los" }));
+    const uit = (data.opdrachten || []).flatMap((o) =>
+      (o.afspraken || []).map((a) => ({
+        ...a,
+        _bron: "opdracht",
+        _opdracht: o.klant,
+        titel: a.titel || `${o.soort}, ${o.klant}`,
+      }))
+    );
+    return [...los, ...uit];
+  }, [data.shoots, data.opdrachten]);
+
   const komendeShoots = useMemo(
     () =>
-      data.shoots
+      alleAfspraken
         .map((s) => ({ ...s, _d: startEind(s).start }))
         .filter((s) => s._d >= new Date(Date.now() - 3600000))
         .sort((a, b) => a._d - b._d),
-    [data.shoots]
+    [alleAfspraken]
   );
 
   const spullenWaarde = useMemo(
@@ -1074,6 +1155,7 @@ function App() {
     ["facturen", "Facturen"],
     ["uitgaven", "Uitgaven"],
     ["btw", "Btw"],
+    ["opdrachten", "Opdrachten"],
     ["shoots", "Agenda"],
     ["spullen", "Apparatuur"],
   ];
@@ -1085,7 +1167,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 12
+          versie 13
         </div>
 
         <header className="mb-7">
@@ -1175,10 +1257,20 @@ function App() {
           />
         )}
         {tab === "btw" && <Btw data={data} btwVan={btwVan} />}
+        {tab === "opdrachten" && (
+          <Opdrachten
+            opdrachten={data.opdrachten || []}
+            facturen={data.facturen}
+            voegToe={voegToe}
+            wijzig={wijzig}
+            verwijder={verwijder}
+          />
+        )}
+
         {tab === "shoots" && (
           <Shoots
             komende={komendeShoots}
-            alle={data.shoots}
+            alle={alleAfspraken}
             form={form}
             setForm={setForm}
             voegToe={voegToe}
@@ -1919,13 +2011,504 @@ function Btw({ data, btwVan }) {
   );
 }
 
+
+/* ---------- opdrachten ---------- */
+function Opdrachten({ opdrachten, facturen, voegToe, wijzig, verwijder }) {
+  const [open, setOpen] = useState([]);
+  const [nieuw, setNieuw] = useState(null);
+  const isOpen = (id) => open.includes(id);
+  const wissel = (id) => setOpen(isOpen(id) ? open.filter((x) => x !== id) : [...open, id]);
+
+  const maak = () => {
+    if (!nieuw.klant.trim()) return;
+    voegToe("opdrachten", {
+      ...nieuw,
+      checklist: STANDAARDLIJSTEN[nieuw.soort].map((t) => ({ tekst: t, klaar: false })),
+      notities: [],
+      documenten: [],
+      afspraken: [],
+      status: "lopend",
+    });
+    setNieuw(null);
+  };
+
+  const lopend = opdrachten.filter((o) => o.status !== "afgerond");
+  const afgerond = opdrachten.filter((o) => o.status === "afgerond");
+
+  return (
+    <div>
+      <div className="mb-5">
+        <Knop soort="vol" onClick={() => setNieuw({ klant: "", soort: SOORTEN[0] })}>
+          Nieuwe opdracht
+        </Knop>
+      </div>
+
+      {nieuw && (
+        <Print>
+          <Veld label="Voor wie">
+            <Input
+              value={nieuw.klant}
+              onChange={(e) => setNieuw({ ...nieuw, klant: e.target.value })}
+              placeholder="Sanne en Tom, of Bakkerij Jansen"
+            />
+          </Veld>
+          <Veld label="Wat voor opdracht">
+            <Select
+              value={nieuw.soort}
+              onChange={(e) => setNieuw({ ...nieuw, soort: e.target.value })}
+            >
+              {SOORTEN.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </Select>
+          </Veld>
+          <p className="text-sm mb-3" style={{ ...display, fontStyle: "italic", color: C.soft }}>
+            Je krijgt de standaardlijst voor {nieuw.soort.toLowerCase()}, {STANDAARDLIJSTEN[nieuw.soort].length}{" "}
+            punten. Die kun je daarna aanpassen.
+          </p>
+          <div className="flex gap-2">
+            <Knop soort="vol" onClick={maak}>
+              Opdracht aanmaken
+            </Knop>
+            <Knop soort="weg" onClick={() => setNieuw(null)}>
+              Annuleren
+            </Knop>
+          </div>
+        </Print>
+      )}
+
+      {opdrachten.length === 0 && !nieuw && (
+        <p className="text-sm" style={{ ...ui, color: C.soft }}>
+          Nog geen opdrachten. Maak er een aan zodra een klant ja zegt, dan staat alles vanaf dag
+          één op één plek.
+        </p>
+      )}
+
+      {[
+        ["Lopend", lopend],
+        ["Afgerond", afgerond],
+      ].map(([kop, lijst]) =>
+        lijst.length ? (
+          <div key={kop}>
+            <h2 className="text-2xl mt-6 mb-1" style={{ ...display, color: C.ink }}>
+              {kop}
+            </h2>
+            {lijst.map((o) => (
+              <Opdracht
+                key={o.id}
+                o={o}
+                open={isOpen(o.id)}
+                wissel={() => wissel(o.id)}
+                wijzig={wijzig}
+                verwijder={verwijder}
+                facturen={facturen}
+              />
+            ))}
+          </div>
+        ) : null
+      )}
+    </div>
+  );
+}
+
+function Opdracht({ o, open, wissel, wijzig, verwijder, facturen }) {
+  const [tekst, setTekst] = useState("");
+  const [punt, setPunt] = useState("");
+  const [doc, setDoc] = useState({ naam: "", url: "" });
+  const [afspraak, setAfspraak] = useState(null);
+
+  const klaar = (o.checklist || []).filter((c) => c.klaar).length;
+  const totaal = (o.checklist || []).length;
+  const volgende = (o.afspraken || [])
+    .map((a) => ({ ...a, _d: startEind(a).start }))
+    .filter((a) => a._d >= new Date())
+    .sort((a, b) => a._d - b._d)[0];
+  const factuur = facturen.find(
+    (f) => f.klant && o.klant && f.klant.toLowerCase().includes(o.klant.toLowerCase().slice(0, 6))
+  );
+
+  const zet = (patch) => wijzig("opdrachten", o.id, patch);
+
+  return (
+    <div className="mb-1">
+      <button
+        onClick={wissel}
+        aria-expanded={open}
+        className="w-full flex items-baseline justify-between pt-4 pb-2 cursor-pointer text-left"
+        style={{
+          background: "transparent",
+          border: "none",
+          borderBottom: `1px solid ${open ? C.ink : C.line}`,
+        }}
+      >
+        <span className="flex items-baseline gap-2 min-w-0">
+          <span
+            style={{
+              display: "inline-block",
+              fontSize: 12,
+              color: C.soft,
+              transform: open ? "rotate(90deg)" : "none",
+              transition: "transform 120ms",
+            }}
+          >
+            ▶
+          </span>
+          <span className="min-w-0">
+            <span className="text-xl block" style={{ ...display, color: C.ink }}>
+              {o.klant}
+            </span>
+            <span className="text-sm block" style={{ ...ui, color: C.soft }}>
+              {o.soort}
+              {volgende
+                ? `, ${volgende._d.toLocaleDateString("nl-NL", { day: "numeric", month: "long" })}`
+                : ", nog niets gepland"}
+            </span>
+          </span>
+        </span>
+        <span className="text-right whitespace-nowrap">
+          <span className="text-base block" style={{ ...display, color: klaar === totaal ? C.goed : C.ink }}>
+            {klaar} van {totaal}
+          </span>
+          <span className="text-sm block" style={{ ...ui, color: C.soft }}>
+            afgevinkt
+          </span>
+        </span>
+      </button>
+
+      {open && (
+        <div className="pb-6">
+          {/* checklist */}
+          <h3 className="text-base mt-4 mb-1" style={{ ...ui, color: C.soft }}>
+            Checklist
+          </h3>
+          {(o.checklist || []).map((c, i) => (
+            <label
+              key={i}
+              className="flex items-center gap-3 py-2 cursor-pointer"
+              style={{ borderBottom: `1px solid ${C.line}` }}
+            >
+              <input
+                type="checkbox"
+                checked={c.klaar}
+                onChange={() =>
+                  zet({
+                    checklist: o.checklist.map((x, j) => (i === j ? { ...x, klaar: !x.klaar } : x)),
+                  })
+                }
+              />
+              <span
+                className="flex-1 text-base"
+                style={{
+                  ...ui,
+                  color: c.klaar ? C.soft : C.ink,
+                  textDecoration: c.klaar ? "line-through" : "none",
+                }}
+              >
+                {c.tekst}
+              </span>
+              <Knop
+                klein
+                soort="weg"
+                onClick={(e) => zet({ checklist: o.checklist.filter((_, j) => j !== i) })}
+              >
+                Weg
+              </Knop>
+            </label>
+          ))}
+          <div className="flex gap-2 mt-2">
+            <Input
+              value={punt}
+              onChange={(e) => setPunt(e.target.value)}
+              placeholder="Punt toevoegen"
+            />
+            <Knop
+              onClick={() => {
+                if (!punt.trim()) return;
+                zet({ checklist: [...(o.checklist || []), { tekst: punt, klaar: false }] });
+                setPunt("");
+              }}
+            >
+              Erbij
+            </Knop>
+          </div>
+
+          {/* afspraken */}
+          <h3 className="text-base mt-6 mb-1" style={{ ...ui, color: C.soft }}>
+            Afspraken
+          </h3>
+          {(o.afspraken || []).length === 0 && (
+            <p className="text-sm py-2" style={{ ...ui, color: C.soft }}>
+              Nog niks ingepland.
+            </p>
+          )}
+          {(o.afspraken || []).map((a, i) => (
+            <Regel
+              key={a.id || i}
+              titel={a.titel}
+              onder={`${new Date(`${a.datum}T${a.tijd}`).toLocaleDateString("nl-NL", {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+              })} om ${a.tijd}, ${uurTekst(a.uren || 2)}${a.locatie ? `, ${a.locatie}` : ""}`}
+              rechts=""
+              acties={
+                <>
+                  <a
+                    href={googleLink(a)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-4 py-2 text-sm no-underline"
+                    style={{ ...ui, background: C.ink, color: C.print }}
+                  >
+                    Naar Google Agenda
+                  </a>
+                  <Knop
+                    onClick={() =>
+                      download(
+                        `${(a.titel || "afspraak").replace(/\W+/g, "-").toLowerCase()}.ics`,
+                        maakICS([a]),
+                        "text/calendar"
+                      )
+                    }
+                  >
+                    Apple of Outlook
+                  </Knop>
+                  <Knop
+                    klein
+                    soort="weg"
+                    onClick={() => zet({ afspraken: o.afspraken.filter((_, j) => j !== i) })}
+                  >
+                    Weghalen
+                  </Knop>
+                </>
+              }
+            />
+          ))}
+
+          {afspraak ? (
+            <div className="mt-3 p-4" style={{ background: C.print, border: `1px solid ${C.line}` }}>
+              <Veld label="Wat is het">
+                <Input
+                  value={afspraak.titel}
+                  onChange={(e) => setAfspraak({ ...afspraak, titel: e.target.value })}
+                  placeholder="Kennismaking, de dag zelf, foto's uitzoeken"
+                />
+              </Veld>
+              <div className="flex gap-2">
+                <Input
+                  type="date"
+                  value={afspraak.datum}
+                  onChange={(e) => setAfspraak({ ...afspraak, datum: e.target.value })}
+                />
+                <Input
+                  type="time"
+                  value={afspraak.tijd}
+                  onChange={(e) => setAfspraak({ ...afspraak, tijd: e.target.value })}
+                />
+                <Select
+                  value={afspraak.uren}
+                  onChange={(e) => setAfspraak({ ...afspraak, uren: Number(e.target.value) })}
+                >
+                  {UREN.map((u) => (
+                    <option key={u} value={u}>
+                      {uurTekst(u)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="mt-2">
+                <Input
+                  value={afspraak.locatie}
+                  onChange={(e) => setAfspraak({ ...afspraak, locatie: e.target.value })}
+                  placeholder="Locatie"
+                />
+              </div>
+              <div className="mt-2">
+                <Select
+                  value={afspraak.herinnering}
+                  onChange={(e) => setAfspraak({ ...afspraak, herinnering: Number(e.target.value) })}
+                >
+                  {HERINNERINGEN.map((x) => (
+                    <option key={x.v} value={x.v}>
+                      {x.l}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex gap-2 mt-3">
+                <Knop
+                  soort="vol"
+                  onClick={() => {
+                    if (!afspraak.titel.trim()) return;
+                    zet({
+                      afspraken: [
+                        ...(o.afspraken || []),
+                        { ...afspraak, id: Math.random().toString(36).slice(2, 9) },
+                      ],
+                    });
+                    setAfspraak(null);
+                  }}
+                >
+                  Inplannen
+                </Knop>
+                <Knop soort="weg" onClick={() => setAfspraak(null)}>
+                  Annuleren
+                </Knop>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2">
+              <Knop
+                onClick={() =>
+                  setAfspraak({
+                    titel: "",
+                    datum: vandaag(),
+                    tijd: "10:00",
+                    uren: 2,
+                    locatie: "",
+                    herinnering: 1440,
+                  })
+                }
+              >
+                Afspraak inplannen
+              </Knop>
+            </div>
+          )}
+
+          {/* documenten */}
+          <h3 className="text-base mt-6 mb-1" style={{ ...ui, color: C.soft }}>
+            Documenten
+          </h3>
+          {(o.documenten || []).map((d, i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between gap-3 py-2"
+              style={{ borderBottom: `1px solid ${C.line}` }}
+            >
+              <a
+                href={d.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-base"
+                style={{ ...ui, color: C.accent }}
+              >
+                {d.naam}
+              </a>
+              <Knop
+                klein
+                soort="weg"
+                onClick={() => zet({ documenten: o.documenten.filter((_, j) => j !== i) })}
+              >
+                Weg
+              </Knop>
+            </div>
+          ))}
+          <div className="flex gap-2 mt-2">
+            <Input
+              value={doc.naam}
+              onChange={(e) => setDoc({ ...doc, naam: e.target.value })}
+              placeholder="Contract"
+            />
+            <Input
+              value={doc.url}
+              onChange={(e) => setDoc({ ...doc, url: e.target.value })}
+              placeholder="Plak de link uit Drive"
+            />
+            <Knop
+              onClick={() => {
+                if (!doc.url.trim()) return;
+                zet({
+                  documenten: [
+                    ...(o.documenten || []),
+                    { naam: doc.naam.trim() || "Document", url: doc.url.trim() },
+                  ],
+                });
+                setDoc({ naam: "", url: "" });
+              }}
+            >
+              Erbij
+            </Knop>
+          </div>
+
+          {/* notities */}
+          <h3 className="text-base mt-6 mb-1" style={{ ...ui, color: C.soft }}>
+            Notities
+          </h3>
+          {(o.notities || []).map((n, i) => (
+            <div key={i} className="py-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+              <div className="text-sm" style={{ ...display, fontStyle: "italic", color: C.soft }}>
+                {new Date(n.datum).toLocaleDateString("nl-NL", {
+                  day: "numeric",
+                  month: "long",
+                  year: "numeric",
+                })}
+              </div>
+              <div className="text-base mt-1" style={{ ...ui, color: C.ink, whiteSpace: "pre-wrap" }}>
+                {n.tekst}
+              </div>
+              <div className="mt-1">
+                <Knop
+                  klein
+                  soort="weg"
+                  onClick={() => zet({ notities: o.notities.filter((_, j) => j !== i) })}
+                >
+                  Weg
+                </Knop>
+              </div>
+            </div>
+          ))}
+          <div className="mt-2">
+            <textarea
+              value={tekst}
+              onChange={(e) => setTekst(e.target.value)}
+              placeholder="Wat is er besproken"
+              rows={3}
+              className="w-full px-3 py-2 text-base outline-none"
+              style={{ ...ui, background: C.print, border: `1px solid ${C.line}`, color: C.ink }}
+            />
+            <div className="mt-2">
+              <Knop
+                onClick={() => {
+                  if (!tekst.trim()) return;
+                  zet({ notities: [{ datum: vandaag(), tekst }, ...(o.notities || [])] });
+                  setTekst("");
+                }}
+              >
+                Notitie bewaren
+              </Knop>
+            </div>
+          </div>
+
+          {/* afronden */}
+          <div className="flex gap-2 mt-6 pt-4 flex-wrap" style={{ borderTop: `1px solid ${C.line}` }}>
+            {factuur && (
+              <span className="text-sm px-2 py-2" style={{ ...ui, color: C.soft }}>
+                Factuur {factuur.nummer}, {factuur.status === "betaald" ? "betaald" : "nog open"}
+              </span>
+            )}
+            <div className="flex-1" />
+            <Knop onClick={() => zet({ status: o.status === "afgerond" ? "lopend" : "afgerond" })}>
+              {o.status === "afgerond" ? "Weer openzetten" : "Opdracht afronden"}
+            </Knop>
+            <Knop klein soort="weg" onClick={() => verwijder("opdrachten", o.id)}>
+              Verwijderen
+            </Knop>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- shoots ---------- */
 function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
   const leeg = {
     titel: "",
     datum: vandaag(),
     tijd: "10:00",
-    duur: 120,
+    uren: 2,
     locatie: "",
     notitie: "",
     herinnering: 1440,
@@ -1980,8 +2563,14 @@ function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
           </div>
           <div className="flex gap-3">
             <div className="flex-1">
-              <Veld label="Duur in minuten">
-                <Input type="number" value={f.duur} onChange={(e) => zet("duur", e.target.value)} />
+              <Veld label="Hoe lang">
+                <Select value={f.uren} onChange={(e) => zet("uren", Number(e.target.value))}>
+                  {UREN.map((u) => (
+                    <option key={u} value={u}>
+                      {uurTekst(u)}
+                    </option>
+                  ))}
+                </Select>
               </Veld>
             </div>
             <div className="flex-1">
@@ -2058,9 +2647,15 @@ function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
               >
                 Apple of Outlook
               </Knop>
-              <Knop klein soort="weg" onClick={() => verwijder("shoots", a.id)}>
-                Verwijderen
-              </Knop>
+              {a._bron === "opdracht" ? (
+                <span className="text-sm px-2 py-1" style={{ ...ui, color: C.soft }}>
+                  hoort bij {a._opdracht}
+                </span>
+              ) : (
+                <Knop klein soort="weg" onClick={() => verwijder("shoots", a.id)}>
+                  Verwijderen
+                </Knop>
+              )}
             </>
           }
         />
