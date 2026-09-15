@@ -529,6 +529,51 @@ function Controle({ soort, rijen, setRijen, opslaan }) {
   );
 }
 
+
+function groepeerPerKwartaal(items) {
+  const groepen = new Map();
+  items.forEach((x) => {
+    const kw = kwartaalVan(x.datum);
+    const sleutel = `${kw.jaar}-${kw.k}`;
+    if (!groepen.has(sleutel)) groepen.set(sleutel, { sleutel, kw, items: [] });
+    groepen.get(sleutel).items.push(x);
+  });
+  return [...groepen.values()]
+    .sort((a, b) => b.kw.jaar - a.kw.jaar || b.kw.k - a.kw.k)
+    .map((g) => ({
+      ...g,
+      items: g.items.sort((a, b) => new Date(b.datum) - new Date(a.datum)),
+    }));
+}
+
+function KwartaalKop({ kw, totaal, bijschrift }) {
+  const nu = kwartaalVan(vandaag());
+  const lopend = nu.jaar === kw.jaar && nu.k === kw.k;
+  return (
+    <div
+      className="flex items-baseline justify-between pt-6 pb-2"
+      style={{ borderBottom: `1px solid ${C.ink}` }}
+    >
+      <div className="text-xl" style={{ ...display, color: C.ink }}>
+        {kwartaalLabel(kw)}
+        {lopend && (
+          <span className="text-sm ml-2" style={{ ...ui, color: C.soft }}>
+            lopend kwartaal
+          </span>
+        )}
+      </div>
+      <div className="text-right">
+        <div className="text-base" style={{ ...display, color: C.ink }}>
+          {euro(totaal)}
+        </div>
+        <div className="text-sm" style={{ ...ui, color: C.soft }}>
+          {bijschrift}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- bouwstenen ---------- */
 function Print({ children, onderschrift, nadruk }) {
   return (
