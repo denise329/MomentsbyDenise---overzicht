@@ -1064,7 +1064,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 9
+          versie 11
         </div>
 
         <header className="mb-7">
@@ -1171,6 +1171,7 @@ function App() {
             form={form}
             setForm={setForm}
             voegToe={voegToe}
+            wijzig={wijzig}
             verwijder={verwijder}
           />
         )}
@@ -2060,7 +2061,11 @@ function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
 }
 
 /* ---------- spullen ---------- */
-function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
+function Spullen({ spullen, totaal, form, setForm, voegToe, wijzig, verwijder }) {
+  const [open, setOpen] = useState([]);
+  const isOpen = (naam) => open.includes(naam);
+  const wissel = (naam) =>
+    setOpen(isOpen(naam) ? open.filter((x) => x !== naam) : [...open, naam]);
   const leeg = {
     naam: "",
     prijs: "",
@@ -2174,23 +2179,40 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
 
       {groepen.map((groep) => (
         <div key={groep.naam}>
-      <div
-        className="flex items-baseline justify-between pt-6 pb-2"
-        style={{ borderBottom: `1px solid ${C.ink}` }}
+      <button
+        onClick={() => wissel(groep.naam)}
+        aria-expanded={isOpen(groep.naam)}
+        className="w-full flex items-baseline justify-between pt-5 pb-2 cursor-pointer text-left"
+        style={{
+          background: "transparent",
+          border: "none",
+          borderBottom: `1px solid ${isOpen(groep.naam) ? C.ink : C.line}`,
+        }}
       >
-        <div className="text-xl" style={{ ...display, color: C.ink }}>
+        <span className="text-xl flex items-baseline gap-2" style={{ ...display, color: C.ink }}>
+          <span
+            style={{
+              display: "inline-block",
+              fontSize: 12,
+              color: C.soft,
+              transform: isOpen(groep.naam) ? "rotate(90deg)" : "none",
+              transition: "transform 120ms",
+            }}
+          >
+            ▶
+          </span>
           {groep.naam}
-        </div>
-        <div className="text-right">
-          <div className="text-base" style={{ ...display, color: C.ink }}>
+        </span>
+        <span className="text-right">
+          <span className="text-base block" style={{ ...display, color: C.ink }}>
             {euro(groep.items.reduce((s, x) => s + (Number(x.prijs) || 0), 0))}
-          </div>
-          <div className="text-sm" style={{ ...ui, color: C.soft }}>
+          </span>
+          <span className="text-sm block" style={{ ...ui, color: C.soft }}>
             {groep.items.length} stuk{groep.items.length > 1 ? "s" : ""}
-          </div>
-        </div>
-      </div>
-      {groep.items.map((s) => {
+          </span>
+        </span>
+      </button>
+      {isOpen(groep.naam) && groep.items.map((s) => {
         const loopt = s.garantie && new Date(s.garantie) > new Date();
         return (
           <Regel
@@ -2212,9 +2234,29 @@ function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
             }
             rechts={euro(s.prijs)}
             acties={
-              <Knop klein soort="weg" onClick={() => verwijder("spullen", s.id)}>
-                Verwijderen
-              </Knop>
+              <>
+                <select
+                  value={s.categorie || raadCategorie(s.naam)}
+                  onChange={(e) => wijzig("spullen", s.id, { categorie: e.target.value })}
+                  className="px-2 py-1 text-sm cursor-pointer"
+                  style={{
+                    ...ui,
+                    background: C.print,
+                    border: `1px solid ${C.line}`,
+                    color: C.ink,
+                    borderRadius: 0,
+                  }}
+                >
+                  {CATEGORIEEN.map((c) => (
+                    <option key={c} value={c}>
+                      Verplaats naar {c}
+                    </option>
+                  ))}
+                </select>
+                <Knop klein soort="weg" onClick={() => verwijder("spullen", s.id)}>
+                  Verwijderen
+                </Knop>
+              </>
             }
           />
         );
