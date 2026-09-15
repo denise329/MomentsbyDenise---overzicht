@@ -378,16 +378,21 @@ function leesRegelitems(tekst) {
 
   regels.forEach((r, i) => {
     const laag = r.toLowerCase();
-    if (/totaal|subtotaal|btw bedrag|te betalen|factuur|datum/.test(laag)) return;
+    if (/totaal|subtotaal|te betalen|factuur|datum|\bbtw\b|\bvat\b|nr\.|kvk|iban/.test(laag)) return;
     const b = bedragen(r);
-    if (b.length < 2) return;
+    if (!b.length) return;
     const pos = r.search(/\d{1,3}(?:\.\d{3})*,\d{2}|\d{1,3}(?:,\d{3})*\.\d{2}/);
     if (pos < 0) return;
 
-    let oms = r.slice(0, pos).replace(/^\d{4,}\s*/, "").replace(/[|\-\s]+$/, "").trim();
+    let oms = r
+      .slice(0, pos)
+      .replace(/^\d{4,}\s*/, "")
+      .replace(/[|\-\s]+$/, "")
+      .trim();
+    const zonderAantal = oms.replace(/\s+\d{1,3}$/, "").trim();
+    if ((zonderAantal.match(/[a-zA-Z]/g) || []).length >= 3) oms = zonderAantal;
 
     if (!heeftLetters(oms)) {
-      // omschrijving staat op een eigen regel, dat gebeurt als de tekst te lang is
       if (!/^\d{4,}\s/.test(r)) return;
       oms = "";
       for (const j of [i - 1, i + 1]) {
@@ -402,26 +407,54 @@ function leesRegelitems(tekst) {
       }
       if (!oms) return;
     }
-    items.push({ omschrijving: oms, bedrag: b[b.length - 1] });
+    items.push({ omschrijving: oms, bedragen: b });
   });
   return items;
 }
 
-function regelsNaarIncl(items, b) {
-  if (!items.length) return [];
-  const som = items.reduce((s, x) => s + x.bedrag, 0);
-  const factor =
-    b.excl !== null && Math.abs(som - b.excl) < 0.05 && b.incl
-      ? b.incl / b.excl
-      : 1;
-  return items.map((x) => ({
-    omschrijving: x.omschrijving,
-    bedrag: Math.round(x.bedrag * factor * 100) / 100,
-  }));
+/* welke kolom is het bedrag? De kolom waarvan de som klopt met het totaal. */
+function kiesBedragKolom(items, b) {
+  if (!items.length) return { regels: [], zeker: false };
+  const rond = (x) => Math.round(x * 100) / 100;
+
+  for (const vanRechts of [0, 1, 2]) {
+    const waarden = items.map((x) => x.bedragen[x.bedragen.length - 1 - vanRechts]);
+    if (waarden.some((w) => w === undefined || w === null)) continue;
+    const som = rond(waarden.reduce((s, w) => s + w, 0));
+
+    if (b.incl !== null && Math.abs(som - b.incl) < 0.05) {
+      return {
+        regels: items.map((x, i) => ({ omschrijving: x.omschrijving, bedrag: rond(waarden[i]) })),
+        zeker: true,
+        kolom: "inclusief",
+      };
+    }
+    if (b.excl !== null && b.incl !== null && b.excl > 0 && Math.abs(som - b.excl) < 0.05) {
+      const factor = b.incl / b.excl;
+      return {
+        regels: items.map((x, i) => ({
+          omschrijving: x.omschrijving,
+          bedrag: rond(waarden[i] * factor),
+        })),
+        zeker: true,
+        kolom: "exclusief, omgerekend naar inclusief",
+      };
+    }
+  }
+
+  // niks sluit aan: neem de laatste kolom, maar zeg erbij dat het nagekeken moet worden
+  return {
+    regels: items.map((x) => ({
+      omschrijving: x.omschrijving,
+      bedrag: rond(x.bedragen[x.bedragen.length - 1]),
+    })),
+    zeker: false,
+  };
 }
 
 function leesUitgave(tekst, bestandsnaam) {
   const b = leesBedragen(tekst);
+  const kolommen = kiesBedragKolom(leesRegelitems(tekst), b);
   const { tarief, zeker } = bepaalTarief(b);
   const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
   const leverancier =
@@ -434,12 +467,14 @@ function leesUitgave(tekst, bestandsnaam) {
   if (!zeker) let_op.push("tarief");
   if (b.incl === null) let_op.push("bedrag");
   if (b.meerdereTarieven) let_op.push("meerdere tarieven");
+  if (kolommen.regels.length > 1 && !kolommen.zeker) let_op.push("bedragen per regel");
 
   return {
     naam: leverancier,
     omschrijving: "",
     apparatuur: false,
-    _regels: regelsNaarIncl(leesRegelitems(tekst, tarief), b),
+    _regels: kolommen.regels,
+    _regelsOnzeker: !kolommen.zeker,
     bedrag: b.incl !== null ? Math.round(b.incl * 100) / 100 : "",
     tarief,
     datum: vindDatum(tekst) || new Date().toISOString().slice(0, 10),
@@ -994,7 +1029,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 7
+          versie 8
         </div>
 
         <header className="mb-7">
