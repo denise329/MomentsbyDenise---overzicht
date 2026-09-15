@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#FCFAF8" />
+<title>Moments by Denise, overzicht</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; background: #FCFAF8; -webkit-font-smoothing: antialiased; }
+  * { box-sizing: border-box; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid #2A2724; outline-offset: 2px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+
+/* ---------- huisstijl ---------- */
+const C = {
+  paper: "#FCFAF8",
+  print: "#FFFFFF",
+  ink: "#2A2724",
+  soft: "#8A8177",
+  line: "#E8E2DA",
+  accent: "#8C7B6B",
+  goed: "#4F6B52",
+  open: "#A8761F",
+  goedZacht: "#EFF3EE",
+  openZacht: "#FAF3E4",
+};
+
+const display = { fontFamily: "Georgia, 'Times New Roman', serif" };
+const ui = { fontFamily: "Inter, -apple-system, Segoe UI, Roboto, sans-serif" };
+
+const KEY = "mbd-overzicht-v2";
+const LEEG = { facturen: [], uitgaven: [], shoots: [], spullen: [] };
+
+/* ---------- hulpjes ---------- */
+const euro = (n) =>
+  new Intl.NumberFormat("nl-NL", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 2,
+  }).format(Number(n) || 0);
+
+const pad = (n) => String(n).padStart(2, "0");
+const vandaag = () => new Date().toISOString().slice(0, 10);
+
+const datumKort = (d) =>
+  new Date(d).toLocaleDateString("nl-NL", { day: "numeric", month: "short" });
+
+function kwartaalVan(datum) {
+  const d = new Date(datum);
+  return { jaar: d.getFullYear(), k: Math.floor(d.getMonth() / 3) + 1 };
+}
+
+function kwartaalLabel({ jaar, k }) {
+  return `Q${k} ${jaar}`;
+}
+
+function aangifteDeadline({ jaar, k }) {
+  const maand = k * 3; // 0-indexed maand na kwartaal
+  const d = new Date(jaar, maand + 1, 0);
+  return d;
+}
+
+const btwUitExcl = (excl, tarief) => (Number(excl) || 0) * (Number(tarief) / 100);
+const btwUitIncl = (incl, tarief) => {
+  const i = Number(incl) || 0;
+  const t = Number(tarief) / 100;
+  return i - i / (1 + t);
+};
+
+function dagenOpen(datum) {
+  return Math.floor((Date.now() - new Date(datum)) / 86400000);
+}
+
+function lokaleStamp(d) {
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(
+    d.getHours()
+  )}${pad(d.getMinutes())}00`;
+}
+const utcStamp = (d) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+
+function startEind(a) {
+  const start = new Date(`${a.datum}T${a.tijd || "09:00"}`);
+  return { start, eind: new Date(start.getTime() + (Number(a.duur) || 120) * 60000) };
+}
+
+function googleLink(a) {
+  const { start, eind } = startEind(a);
+  const p = new URLSearchParams({
+    action: "TEMPLATE",
+    text: a.titel,
+    dates: `${utcStamp(start)}/${utcStamp(eind)}`,
+    details: a.notitie || "",
+    location: a.locatie || "",
+  });
+  return `https://calendar.google.com/calendar/render?${p}`;
+}
+
+function maakICS(lijst) {
+  const esc = (s) =>
+    String(s || "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  const r = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//MomentsbyDenise//NL", "CALSCALE:GREGORIAN"];
+  lijst.forEach((a) => {
+    const { start, eind } = startEind(a);
+    r.push(
+      "BEGIN:VEVENT",
+      `UID:${a.id}@mbd`,
+      `DTSTAMP:${utcStamp(new Date())}`,
+      `DTSTART:${lokaleStamp(start)}`,
+      `DTEND:${lokaleStamp(eind)}`,
+      `SUMMARY:${esc(a.titel)}`,
+      `DESCRIPTION:${esc(a.notitie)}`,
+      `LOCATION:${esc(a.locatie)}`
+    );
+    if (Number(a.herinnering) > 0) {
+      r.push("BEGIN:VALARM", `TRIGGER:-PT${a.herinnering}M`, "ACTION:DISPLAY", `DESCRIPTION:${esc(a.titel)}`, "END:VALARM");
+    }
+    r.push("END:VEVENT");
+  });
+  r.push("END:VCALENDAR");
+  return r.join("\r\n");
+}
+
+function download(naam, inhoud, type) {
+  const blob = new Blob([inhoud], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = naam;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const TARIEVEN = [
+  { v: 21, l: "21 procent" },
+  { v: 9, l: "9 procent" },
+  { v: 0, l: "0 procent of vrijgesteld" },
+];
+
+const HERINNERINGEN = [
+  { v: 0, l: "Geen" },
+  { v: 60, l: "1 uur vooraf" },
+  { v: 180, l: "3 uur vooraf" },
+  { v: 1440, l: "1 dag vooraf" },
+  { v: 2880, l: "2 dagen vooraf" },
+  { v: 10080, l: "1 week vooraf" },
+];
+
+/* ---------- bouwstenen ---------- */
+function Print({ children, onderschrift, nadruk }) {
+  return (
+    <div className="mb-4">
+      <div
+        className="px-5 py-4"
+        style={{
+          background: C.print,
+          border: `1px solid ${C.line}`,
+          boxShadow: nadruk ? "0 1px 0 rgba(42,39,36,0.06)" : "none",
+        }}
+      >
+        {children}
+      </div>
+      {onderschrift && (
+        <p
+          className="text-sm mt-2 pl-1"
+          style={{ ...display, fontStyle: "italic", color: C.soft }}
+        >
+          {onderschrift}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Bedrag({ label, waarde, kleur, groot }) {
+  return (
+    <div>
+      <div className="text-sm" style={{ ...ui, color: C.soft }}>
+        {label}
+      </div>
+      <div
+        className={groot ? "text-4xl mt-1" : "text-2xl mt-1"}
+        style={{ ...display, color: kleur || C.ink }}
+      >
+        {waarde}
+      </div>
+    </div>
+  );
+}
+
+const inputStijl = {
+  ...ui,
+  background: C.print,
+  border: `1px solid ${C.line}`,
+  color: C.ink,
+  borderRadius: 0,
+};
+
+const Input = (p) => (
+  <input {...p} className="w-full px-3 py-2 text-base outline-none" style={inputStijl} />
+);
+
+const Select = ({ children, ...p }) => (
+  <select {...p} className="w-full px-3 py-2 text-base outline-none" style={inputStijl}>
+    {children}
+  </select>
+);
+
+function Veld({ label, children }) {
+  return (
+    <label className="block mb-3">
+      <span className="block text-sm mb-1" style={{ ...ui, color: C.soft }}>
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function Knop({ children, onClick, soort = "stil", klein }) {
+  const s = {
+    vol: { background: C.ink, color: C.print, border: `1px solid ${C.ink}` },
+    stil: { background: C.print, color: C.ink, border: `1px solid ${C.line}` },
+    weg: { background: "transparent", color: C.soft, border: "1px solid transparent" },
+  }[soort];
+  return (
+    <button
+      onClick={onClick}
+      className={klein ? "px-2 py-1 text-sm cursor-pointer" : "px-4 py-2 text-sm cursor-pointer"}
+      style={{ ...ui, borderRadius: 0, ...s }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Merk({ status }) {
+  const kleur = status === "betaald" ? C.goed : C.open;
+  const achter = status === "betaald" ? C.goedZacht : C.openZacht;
+  return (
+    <span
+      className="text-sm px-2 py-1"
+      style={{ ...ui, color: kleur, background: achter }}
+    >
+      {status === "betaald" ? "Betaald" : "Open"}
+    </span>
+  );
+}
+
+function Regel({ titel, onder, rechts, onderRechts, acties }) {
+  return (
+    <div className="py-4" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-base" style={{ ...ui, color: C.ink }}>
+            {titel}
+          </div>
+          {onder && (
+            <div className="text-sm mt-1" style={{ ...ui, color: C.soft }}>
+              {onder}
+            </div>
+          )}
+        </div>
+        <div className="text-right whitespace-nowrap">
+          <div className="text-lg" style={{ ...display, color: C.ink }}>
+            {rechts}
+          </div>
+          {onderRechts && <div className="mt-1">{onderRechts}</div>}
+        </div>
+      </div>
+      {acties && <div className="flex gap-2 mt-2 flex-wrap">{acties}</div>}
+    </div>
+  );
+}
+
+/* ---------- app ---------- */
+function App() {
+  const [data, setData] = useState(LEEG);
+  const [klaar, setKlaar] = useState(false);
+  const [melding, setMelding] = useState("");
+  const [tab, setTab] = useState("overzicht");
+  const [form, setForm] = useState(null);
+
+  useEffect(() => {
+    try {
+      const r = localStorage.getItem(KEY);
+      if (r) setData({ ...LEEG, ...JSON.parse(r) });
+    } catch (e) {
+      /* eerste keer, nog niks opgeslagen */
+    }
+    setKlaar(true);
+  }, []);
+
+  const bewaar = (nieuw) => {
+    setData(nieuw);
+    try {
+      localStorage.setItem(KEY, JSON.stringify(nieuw));
+      setMelding("");
+    } catch (e) {
+      setMelding("Opslaan lukte niet. Maak een export zodat je niks kwijtraakt.");
+    }
+  };
+
+  const voegToe = (soort, item) =>
+    bewaar({
+      ...data,
+      [soort]: [...data[soort], { ...item, id: Math.random().toString(36).slice(2, 9) }],
+    });
+
+  const voegMeerToe = (soort, items) =>
+    bewaar({
+      ...data,
+      [soort]: [
+        ...data[soort],
+        ...items.map((i) => ({ ...i, id: Math.random().toString(36).slice(2, 9) })),
+      ],
+    });
+
+  const wijzig = (soort, id, patch) =>
+    bewaar({
+      ...data,
+      [soort]: data[soort].map((x) => (x.id === id ? { ...x, ...patch } : x)),
+    });
+
+  const verwijder = (soort, id) =>
+    bewaar({ ...data, [soort]: data[soort].filter((x) => x.id !== id) });
+
+  /* berekeningen */
+  const openstaand = useMemo(
+    () => data.facturen.filter((f) => f.status !== "betaald"),
+    [data.facturen]
+  );
+  const openBedrag = useMemo(
+    () =>
+      openstaand.reduce(
+        (s, f) => s + (Number(f.bedrag) || 0) + btwUitExcl(f.bedrag, f.tarief),
+        0
+      ),
+    [openstaand]
+  );
+
+  const huidigKwartaal = kwartaalVan(vandaag());
+
+  const btwVan = (kw) => {
+    const afdragen = data.facturen
+      .filter((f) => {
+        const q = kwartaalVan(f.datum);
+        return q.jaar === kw.jaar && q.k === kw.k;
+      })
+      .reduce((s, f) => s + btwUitExcl(f.bedrag, f.tarief), 0);
+    const terug = data.uitgaven
+      .filter((u) => {
+        const q = kwartaalVan(u.datum);
+        return q.jaar === kw.jaar && q.k === kw.k && u.zakelijk !== false;
+      })
+      .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0);
+    return { afdragen, terug, saldo: afdragen - terug };
+  };
+
+  const btwNu = useMemo(() => btwVan(huidigKwartaal), [data]);
+
+  const omzetJaar = useMemo(() => {
+    const jaar = new Date().getFullYear();
+    return data.facturen
+      .filter((f) => new Date(f.datum).getFullYear() === jaar)
+      .reduce((s, f) => s + (Number(f.bedrag) || 0), 0);
+  }, [data.facturen]);
+
+  const komendeShoots = useMemo(
+    () =>
+      data.shoots
+        .map((s) => ({ ...s, _d: startEind(s).start }))
+        .filter((s) => s._d >= new Date(Date.now() - 3600000))
+        .sort((a, b) => a._d - b._d),
+    [data.shoots]
+  );
+
+  const spullenWaarde = useMemo(
+    () => data.spullen.reduce((s, x) => s + (Number(x.prijs) || 0), 0),
+    [data.spullen]
+  );
+
+  if (!klaar)
+    return (
+      <div className="p-10 text-center" style={{ ...ui, background: C.paper, color: C.soft }}>
+        Even geduld
+      </div>
+    );
+
+  const tabs = [
+    ["overzicht", "Overzicht"],
+    ["facturen", "Facturen"],
+    ["uitgaven", "Uitgaven"],
+    ["btw", "Btw"],
+    ["shoots", "Agenda"],
+    ["spullen", "Apparatuur"],
+  ];
+
+  return (
+    <div style={{ background: C.paper, minHeight: "100%" }}>
+      <div className="max-w-2xl mx-auto px-5 py-8">
+        <header className="mb-7">
+          <div
+            className="text-xl"
+            style={{ ...display, color: C.ink, letterSpacing: "0.22em" }}
+          >
+            MOMENTS BY DENISE
+          </div>
+          <div
+            className="mt-1 text-sm"
+            style={{ ...display, fontStyle: "italic", color: C.soft }}
+          >
+            Je shoots, je facturen en je btw op één plek
+          </div>
+          <div className="mt-4" style={{ borderTop: `1px solid ${C.line}` }} />
+        </header>
+
+        {melding && (
+          <div
+            className="px-4 py-3 mb-4 text-sm"
+            style={{ ...ui, background: C.openZacht, color: C.open }}
+          >
+            {melding}
+          </div>
+        )}
+
+        <nav className="flex gap-4 mb-6 overflow-x-auto" style={{ borderBottom: `1px solid ${C.line}` }}>
+          {tabs.map(([k, l]) => (
+            <button
+              key={k}
+              onClick={() => {
+                setTab(k);
+                setForm(null);
+              }}
+              className="pb-2 text-sm whitespace-nowrap cursor-pointer"
+              style={{
+                ...ui,
+                background: "transparent",
+                border: "none",
+                color: tab === k ? C.ink : C.soft,
+                borderBottom: tab === k ? `1px solid ${C.ink}` : "1px solid transparent",
+                marginBottom: -1,
+              }}
+            >
+              {l}
+            </button>
+          ))}
+        </nav>
+
+        {tab === "overzicht" && (
+          <Overzicht
+            btwNu={btwNu}
+            kw={huidigKwartaal}
+            openBedrag={openBedrag}
+            openstaand={openstaand}
+            omzetJaar={omzetJaar}
+            komendeShoots={komendeShoots}
+            spullenWaarde={spullenWaarde}
+            data={data}
+            bewaar={bewaar}
+            naar={setTab}
+          />
+        )}
+        {tab === "facturen" && (
+          <Facturen
+            facturen={data.facturen}
+            form={form}
+            setForm={setForm}
+            voegToe={voegToe}
+            voegMeerToe={voegMeerToe}
+            wijzig={wijzig}
+            verwijder={verwijder}
+          />
+        )}
+        {tab === "uitgaven" && (
+          <Uitgaven
+            uitgaven={data.uitgaven}
+            form={form}
+            setForm={setForm}
+            voegToe={voegToe}
+            verwijder={verwijder}
+          />
+        )}
+        {tab === "btw" && <Btw data={data} btwVan={btwVan} />}
+        {tab === "shoots" && (
+          <Shoots
+            komende={komendeShoots}
+            alle={data.shoots}
+            form={form}
+            setForm={setForm}
+            voegToe={voegToe}
+            verwijder={verwijder}
+          />
+        )}
+        {tab === "spullen" && (
+          <Spullen
+            spullen={data.spullen}
+            totaal={spullenWaarde}
+            form={form}
+            setForm={setForm}
+            voegToe={voegToe}
+            verwijder={verwijder}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- overzicht ---------- */
+function Overzicht({
+  btwNu,
+  kw,
+  openBedrag,
+  openstaand,
+  omzetJaar,
+  komendeShoots,
+  spullenWaarde,
+  data,
+  bewaar,
+  naar,
+}) {
+  const teLaat = openstaand.filter((f) => f.vervaldatum && new Date(f.vervaldatum) < new Date());
+  const deadline = aangifteDeadline(kw);
+
+  const exporteer = () =>
+    download(`momentsbydenise-${vandaag()}.json`, JSON.stringify(data, null, 2), "application/json");
+
+  const importeer = () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "application/json";
+    inp.onchange = () => {
+      const f = inp.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          bewaar({ ...LEEG, ...JSON.parse(r.result) });
+        } catch (e) {
+          alert("Dit bestand kon ik niet lezen.");
+        }
+      };
+      r.readAsText(f);
+    };
+    inp.click();
+  };
+
+  return (
+    <div>
+      <Print
+        nadruk
+        onderschrift={`Lopend kwartaal, ${kwartaalLabel(kw)}. Je boekhouder doet de aangifte, uiterlijk ${deadline.toLocaleDateString(
+          "nl-NL",
+          { day: "numeric", month: "long" }
+        )}.`}
+      >
+        <Bedrag
+          groot
+          label={btwNu.saldo >= 0 ? "Btw die je opzij moet zetten" : "Btw die je terugkrijgt"}
+          waarde={euro(Math.abs(btwNu.saldo))}
+          kleur={btwNu.saldo >= 0 ? C.open : C.goed}
+        />
+        <div className="flex gap-8 mt-4 pt-4" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Ontvangen op facturen
+            </div>
+            <div className="text-lg" style={{ ...display, color: C.ink }}>
+              {euro(btwNu.afdragen)}
+            </div>
+          </div>
+          <div>
+            <div className="text-sm" style={{ ...ui, color: C.soft }}>
+              Betaald op inkopen
+            </div>
+            <div className="text-lg" style={{ ...display, color: C.ink }}>
+              {euro(btwNu.terug)}
+            </div>
+          </div>
+        </div>
+      </Print>
+
+      {teLaat.length > 0 && (
+        <Print onderschrift="Een belletje werkt beter dan een tweede mail.">
+          <Bedrag
+            label={`${teLaat.length} factuur${teLaat.length > 1 ? "en" : ""} over de vervaldatum`}
+            waarde={euro(
+              teLaat.reduce((s, f) => s + Number(f.bedrag) + btwUitExcl(f.bedrag, f.tarief), 0)
+            )}
+            kleur={C.open}
+          />
+          <div className="mt-2 text-sm" style={{ ...ui, color: C.soft }}>
+            {teLaat.map((f) => f.klant).join(", ")}
+          </div>
+        </Print>
+      )}
+
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <Print>
+          <Bedrag label="Nog te ontvangen" waarde={euro(openBedrag)} />
+        </Print>
+        <Print>
+          <Bedrag label={`Omzet ${new Date().getFullYear()}`} waarde={euro(omzetJaar)} />
+        </Print>
+      </div>
+
+      <h2 className="text-2xl mb-1 mt-8" style={{ ...display, color: C.ink }}>
+        Volgende shoots
+      </h2>
+      {komendeShoots.length === 0 ? (
+        <p className="text-sm py-3" style={{ ...ui, color: C.soft }}>
+          Niks gepland. Zet je eerste shoot erin onder Agenda.
+        </p>
+      ) : (
+        komendeShoots.slice(0, 3).map((s) => (
+          <Regel
+            key={s.id}
+            titel={s.titel}
+            onder={`${s._d.toLocaleDateString("nl-NL", {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })} om ${s.tijd}${s.locatie ? `, ${s.locatie}` : ""}`}
+            rechts=""
+          />
+        ))
+      )}
+
+      <div className="mt-8 pt-4" style={{ borderTop: `1px solid ${C.line}` }}>
+        <div className="text-sm mb-3" style={{ ...ui, color: C.soft }}>
+          Apparatuur in bezit: {euro(spullenWaarde)}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <Knop soort="vol" onClick={() => naar("facturen")}>
+            Factuur toevoegen
+          </Knop>
+          <Knop onClick={exporteer}>Back-up maken</Knop>
+          <Knop onClick={importeer}>Back-up terugzetten</Knop>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- facturen ---------- */
+function Facturen({ facturen, form, setForm, voegToe, wijzig, verwijder }) {
+
+  const volgend = () => {
+    const nrs = facturen
+      .map((f) => parseInt(String(f.nummer).replace(/\D/g, ""), 10))
+      .filter((n) => !isNaN(n));
+    const hoogste = nrs.length ? Math.max(...nrs) : 0;
+    return `${new Date().getFullYear()}-${pad(hoogste % 1000 + 1)}`;
+  };
+
+  const leeg = () => ({
+    nummer: volgend(),
+    klant: "",
+    omschrijving: "",
+    datum: vandaag(),
+    vervaldatum: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+    bedrag: "",
+    tarief: 21,
+    status: "open",
+  });
+
+  const f = form || leeg();
+  const zet = (k, v) => setForm({ ...f, [k]: v });
+
+  const opslaan = () => {
+    if (!f.klant.trim() || !f.bedrag) return;
+    voegToe("facturen", f);
+    setForm(null);
+  };
+
+  const gesorteerd = [...facturen].sort((a, b) => new Date(b.datum) - new Date(a.datum));
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-5 flex-wrap">
+        <Knop soort="vol" onClick={() => setForm(leeg())}>
+          Nieuwe factuur
+        </Knop>
+      </div>
+
+      {form && (
+        <Print>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Factuurnummer">
+                <Input value={f.nummer} onChange={(e) => zet("nummer", e.target.value)} />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Factuurdatum">
+                <Input type="date" value={f.datum} onChange={(e) => zet("datum", e.target.value)} />
+              </Veld>
+            </div>
+          </div>
+          <Veld label="Klant">
+            <Input
+              value={f.klant}
+              onChange={(e) => zet("klant", e.target.value)}
+              placeholder="Naam of bedrijf"
+            />
+          </Veld>
+          <Veld label="Waarvoor">
+            <Input
+              value={f.omschrijving}
+              onChange={(e) => zet("omschrijving", e.target.value)}
+              placeholder="Bruiloftsreportage, bedrijfsshoot"
+            />
+          </Veld>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Bedrag exclusief btw">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={f.bedrag}
+                  onChange={(e) => zet("bedrag", e.target.value)}
+                />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Btw-tarief">
+                <Select value={f.tarief} onChange={(e) => zet("tarief", Number(e.target.value))}>
+                  {TARIEVEN.map((t) => (
+                    <option key={t.v} value={t.v}>
+                      {t.l}
+                    </option>
+                  ))}
+                </Select>
+              </Veld>
+            </div>
+          </div>
+          <Veld label="Betalen voor">
+            <Input
+              type="date"
+              value={f.vervaldatum}
+              onChange={(e) => zet("vervaldatum", e.target.value)}
+            />
+          </Veld>
+          <div
+            className="py-3 mb-3 text-sm"
+            style={{ ...ui, color: C.soft, borderTop: `1px solid ${C.line}` }}
+          >
+            Btw {euro(btwUitExcl(f.bedrag, f.tarief))}, totaal op de factuur{" "}
+            <span style={{ color: C.ink }}>
+              {euro(Number(f.bedrag || 0) + btwUitExcl(f.bedrag, f.tarief))}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Knop soort="vol" onClick={opslaan}>
+              Factuur opslaan
+            </Knop>
+            <Knop soort="weg" onClick={() => setForm(null)}>
+              Annuleren
+            </Knop>
+          </div>
+        </Print>
+      )}
+
+      {facturen.length === 0 && !form && (
+        <p className="text-sm" style={{ ...ui, color: C.soft }}>
+          Nog geen facturen. Voeg er één toe, of laat ze uit je verzonden mail halen.
+        </p>
+      )}
+
+      {gesorteerd.map((x) => {
+        const open = x.status !== "betaald";
+        const laat = open && x.vervaldatum && new Date(x.vervaldatum) < new Date();
+        return (
+          <Regel
+            key={x.id}
+            titel={x.klant}
+            onder={
+              <>
+                {x.nummer}, {datumKort(x.datum)}
+                {x.omschrijving ? `, ${x.omschrijving}` : ""}
+                {laat && (
+                  <span style={{ color: C.open }}>
+                    {`, ${dagenOpen(x.vervaldatum)} dagen over de datum`}
+                  </span>
+                )}
+              </>
+            }
+            rechts={euro(Number(x.bedrag) + btwUitExcl(x.bedrag, x.tarief))}
+            onderRechts={<Merk status={x.status} />}
+            acties={
+              <>
+                <Knop
+                  klein
+                  onClick={() =>
+                    wijzig("facturen", x.id, { status: open ? "betaald" : "open" })
+                  }
+                >
+                  {open ? "Markeer als betaald" : "Toch nog open"}
+                </Knop>
+                <Knop klein soort="weg" onClick={() => verwijder("facturen", x.id)}>
+                  Verwijderen
+                </Knop>
+              </>
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- uitgaven ---------- */
+function Uitgaven({ uitgaven, form, setForm, voegToe, verwijder }) {
+  const leeg = {
+    naam: "",
+    bedrag: "",
+    tarief: 21,
+    categorie: "",
+    datum: vandaag(),
+    zakelijk: true,
+  };
+  const f = form || leeg;
+  const zet = (k, v) => setForm({ ...f, [k]: v });
+
+  const opslaan = () => {
+    if (!f.naam.trim() || !f.bedrag) return;
+    voegToe("uitgaven", f);
+    setForm(null);
+  };
+
+  const gesorteerd = [...uitgaven].sort((a, b) => new Date(b.datum) - new Date(a.datum));
+  const totaalTerug = uitgaven
+    .filter((u) => u.zakelijk !== false)
+    .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0);
+
+  return (
+    <div>
+      <Print onderschrift="Bewaar je bonnetjes, je boekhouder vraagt erom.">
+        <Bedrag label="Btw betaald op inkopen, alles bij elkaar" waarde={euro(totaalTerug)} kleur={C.goed} />
+      </Print>
+
+      <div className="mb-5">
+        <Knop soort="vol" onClick={() => setForm(leeg)}>
+          Uitgave toevoegen
+        </Knop>
+      </div>
+
+      {form && (
+        <Print>
+          <Veld label="Waaraan">
+            <Input
+              value={f.naam}
+              onChange={(e) => zet("naam", e.target.value)}
+              placeholder="Lens, reiskosten, softwareabonnement"
+            />
+          </Veld>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Bedrag inclusief btw">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={f.bedrag}
+                  onChange={(e) => zet("bedrag", e.target.value)}
+                />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Btw-tarief">
+                <Select value={f.tarief} onChange={(e) => zet("tarief", Number(e.target.value))}>
+                  {TARIEVEN.map((t) => (
+                    <option key={t.v} value={t.v}>
+                      {t.l}
+                    </option>
+                  ))}
+                </Select>
+              </Veld>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Datum">
+                <Input type="date" value={f.datum} onChange={(e) => zet("datum", e.target.value)} />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Zakelijk">
+                <Select
+                  value={f.zakelijk ? "ja" : "nee"}
+                  onChange={(e) => zet("zakelijk", e.target.value === "ja")}
+                >
+                  <option value="ja">Ja, btw terugvragen</option>
+                  <option value="nee">Nee, privé</option>
+                </Select>
+              </Veld>
+            </div>
+          </div>
+          <Veld label="Categorie">
+            <Input
+              value={f.categorie}
+              onChange={(e) => zet("categorie", e.target.value)}
+              placeholder="Apparatuur, vervoer, software"
+            />
+          </Veld>
+          <div className="py-3 mb-3 text-sm" style={{ ...ui, color: C.soft, borderTop: `1px solid ${C.line}` }}>
+            Hiervan is{" "}
+            <span style={{ color: C.ink }}>{euro(btwUitIncl(f.bedrag, f.tarief))}</span> btw
+            {f.zakelijk ? ", die krijg je terug." : ", die krijg je niet terug."}
+          </div>
+          <div className="flex gap-2">
+            <Knop soort="vol" onClick={opslaan}>
+              Opslaan
+            </Knop>
+            <Knop soort="weg" onClick={() => setForm(null)}>
+              Annuleren
+            </Knop>
+          </div>
+        </Print>
+      )}
+
+      {uitgaven.length === 0 && !form && (
+        <p className="text-sm" style={{ ...ui, color: C.soft }}>
+          Nog niks ingevoerd. Elke zakelijke aankoop die je hier zet, verlaagt je btw-afdracht.
+        </p>
+      )}
+
+      {gesorteerd.map((u) => (
+        <Regel
+          key={u.id}
+          titel={u.naam}
+          onder={`${datumKort(u.datum)}${u.categorie ? `, ${u.categorie}` : ""}${
+            u.zakelijk === false ? ", privé" : `, btw ${euro(btwUitIncl(u.bedrag, u.tarief))}`
+          }`}
+          rechts={euro(u.bedrag)}
+          acties={
+            <Knop klein soort="weg" onClick={() => verwijder("uitgaven", u.id)}>
+              Verwijderen
+            </Knop>
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+/* ---------- btw ---------- */
+function Btw({ data, btwVan }) {
+  const kwartalen = useMemo(() => {
+    const set = new Map();
+    [...data.facturen, ...data.uitgaven].forEach((x) => {
+      const q = kwartaalVan(x.datum);
+      set.set(`${q.jaar}-${q.k}`, q);
+    });
+    const nu = kwartaalVan(vandaag());
+    set.set(`${nu.jaar}-${nu.k}`, nu);
+    return [...set.values()].sort((a, b) => b.jaar - a.jaar || b.k - a.k);
+  }, [data]);
+
+  const exportKwartaal = (kw) => {
+    const inKw = (d) => {
+      const q = kwartaalVan(d);
+      return q.jaar === kw.jaar && q.k === kw.k;
+    };
+    const regels = [["Soort", "Datum", "Omschrijving", "Bedrag excl", "Tarief", "Btw"]];
+    data.facturen.filter((f) => inKw(f.datum)).forEach((f) =>
+      regels.push([
+        "Verkoop",
+        f.datum,
+        `${f.nummer} ${f.klant}`,
+        (Number(f.bedrag) || 0).toFixed(2),
+        `${f.tarief}%`,
+        btwUitExcl(f.bedrag, f.tarief).toFixed(2),
+      ])
+    );
+    data.uitgaven
+      .filter((u) => inKw(u.datum) && u.zakelijk !== false)
+      .forEach((u) =>
+        regels.push([
+          "Inkoop",
+          u.datum,
+          u.naam,
+          ((Number(u.bedrag) || 0) - btwUitIncl(u.bedrag, u.tarief)).toFixed(2),
+          `${u.tarief}%`,
+          btwUitIncl(u.bedrag, u.tarief).toFixed(2),
+        ])
+      );
+    const csv = regels.map((r) => r.map((c) => `"${c}"`).join(";")).join("\n");
+    download(`btw-${kwartaalLabel(kw).replace(" ", "-")}.csv`, csv, "text/csv");
+  };
+
+  return (
+    <div>
+      <p className="text-sm mb-5" style={{ ...ui, color: C.soft }}>
+        Dit is je eigen overzicht, geen aangifte. Stuur het bestand naar je boekhouder, dan
+        heeft die alles in één keer.
+      </p>
+
+      {kwartalen.map((kw) => {
+        const b = btwVan(kw);
+        const deadline = aangifteDeadline(kw);
+        const verstreken = deadline < new Date();
+        return (
+          <Print
+            key={`${kw.jaar}-${kw.k}`}
+            onderschrift={`Aangifte uiterlijk ${deadline.toLocaleDateString("nl-NL", {
+              day: "numeric",
+              month: "long",
+              year: "numeric",
+            })}${verstreken ? ", die datum is geweest" : ""}`}
+          >
+            <div className="flex items-baseline justify-between">
+              <div className="text-xl" style={{ ...display, color: C.ink }}>
+                {kwartaalLabel(kw)}
+              </div>
+              <div className="text-sm" style={{ ...ui, color: C.soft }}>
+                {b.saldo >= 0 ? "Te betalen" : "Terug te krijgen"}
+              </div>
+            </div>
+            <div
+              className="text-3xl mt-2"
+              style={{ ...display, color: b.saldo >= 0 ? C.open : C.goed }}
+            >
+              {euro(Math.abs(b.saldo))}
+            </div>
+            <div className="mt-4 pt-3 text-sm" style={{ ...ui, borderTop: `1px solid ${C.line}` }}>
+              <div className="flex justify-between py-1" style={{ color: C.soft }}>
+                <span>Btw op je facturen</span>
+                <span style={{ ...display, color: C.ink }}>{euro(b.afdragen)}</span>
+              </div>
+              <div className="flex justify-between py-1" style={{ color: C.soft }}>
+                <span>Btw op je inkopen</span>
+                <span style={{ ...display, color: C.ink }}>min {euro(b.terug)}</span>
+              </div>
+            </div>
+            <div className="mt-3">
+              <Knop onClick={() => exportKwartaal(kw)}>Bestand voor de boekhouder</Knop>
+            </div>
+          </Print>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- shoots ---------- */
+function Shoots({ komende, alle, form, setForm, voegToe, verwijder }) {
+  const leeg = {
+    titel: "",
+    datum: vandaag(),
+    tijd: "10:00",
+    duur: 120,
+    locatie: "",
+    notitie: "",
+    herinnering: 1440,
+  };
+  const f = form || leeg;
+  const zet = (k, v) => setForm({ ...f, [k]: v });
+
+  const opslaan = () => {
+    if (!f.titel.trim()) return;
+    voegToe("shoots", f);
+    setForm(null);
+  };
+
+  const geweest = alle
+    .map((a) => ({ ...a, _d: startEind(a).start }))
+    .filter((a) => !komende.find((k) => k.id === a.id))
+    .sort((a, b) => b._d - a._d);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-5 flex-wrap">
+        <Knop soort="vol" onClick={() => setForm(leeg)}>
+          Shoot of afspraak inplannen
+        </Knop>
+        {komende.length > 0 && (
+          <Knop onClick={() => download("agenda.ics", maakICS(komende), "text/calendar")}>
+            Alles naar je agenda
+          </Knop>
+        )}
+      </div>
+
+      {form && (
+        <Print>
+          <Veld label="Wat staat er te gebeuren">
+            <Input
+              value={f.titel}
+              onChange={(e) => zet("titel", e.target.value)}
+              placeholder="Bruiloft Sanne en Tom"
+            />
+          </Veld>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Datum">
+                <Input type="date" value={f.datum} onChange={(e) => zet("datum", e.target.value)} />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Begintijd">
+                <Input type="time" value={f.tijd} onChange={(e) => zet("tijd", e.target.value)} />
+              </Veld>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Duur in minuten">
+                <Input type="number" value={f.duur} onChange={(e) => zet("duur", e.target.value)} />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Herinnering">
+                <Select
+                  value={f.herinnering}
+                  onChange={(e) => zet("herinnering", Number(e.target.value))}
+                >
+                  {HERINNERINGEN.map((h) => (
+                    <option key={h.v} value={h.v}>
+                      {h.l}
+                    </option>
+                  ))}
+                </Select>
+              </Veld>
+            </div>
+          </div>
+          <Veld label="Locatie">
+            <Input value={f.locatie} onChange={(e) => zet("locatie", e.target.value)} />
+          </Veld>
+          <Veld label="Notitie">
+            <Input
+              value={f.notitie}
+              onChange={(e) => zet("notitie", e.target.value)}
+              placeholder="Welke lens, contactpersoon, parkeren"
+            />
+          </Veld>
+          <div className="flex gap-2">
+            <Knop soort="vol" onClick={opslaan}>
+              Opslaan
+            </Knop>
+            <Knop soort="weg" onClick={() => setForm(null)}>
+              Annuleren
+            </Knop>
+          </div>
+        </Print>
+      )}
+
+      {komende.length === 0 && !form && (
+        <p className="text-sm" style={{ ...ui, color: C.soft }}>
+          Je agenda is leeg.
+        </p>
+      )}
+
+      {komende.map((a) => (
+        <Regel
+          key={a.id}
+          titel={a.titel}
+          onder={`${a._d.toLocaleDateString("nl-NL", {
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+          })} om ${a.tijd}${a.locatie ? `, ${a.locatie}` : ""}`}
+          rechts=""
+          acties={
+            <>
+              <a
+                href={googleLink(a)}
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-2 text-sm no-underline"
+                style={{ ...ui, background: C.ink, color: C.print }}
+              >
+                Naar Google Agenda
+              </a>
+              <Knop
+                onClick={() =>
+                  download(
+                    `${a.titel.replace(/\W+/g, "-").toLowerCase()}.ics`,
+                    maakICS([a]),
+                    "text/calendar"
+                  )
+                }
+              >
+                Apple of Outlook
+              </Knop>
+              <Knop klein soort="weg" onClick={() => verwijder("shoots", a.id)}>
+                Verwijderen
+              </Knop>
+            </>
+          }
+        />
+      ))}
+
+      {geweest.length > 0 && (
+        <>
+          <h2 className="text-2xl mt-8 mb-1" style={{ ...display, color: C.ink }}>
+            Geweest
+          </h2>
+          {geweest.slice(0, 8).map((a) => (
+            <Regel
+              key={a.id}
+              titel={<span style={{ color: C.soft }}>{a.titel}</span>}
+              onder={a._d.toLocaleDateString("nl-NL", {
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+              })}
+              rechts=""
+              acties={
+                <Knop klein soort="weg" onClick={() => verwijder("shoots", a.id)}>
+                  Verwijderen
+                </Knop>
+              }
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- spullen ---------- */
+function Spullen({ spullen, totaal, form, setForm, voegToe, verwijder }) {
+  const leeg = {
+    naam: "",
+    prijs: "",
+    datum: vandaag(),
+    categorie: "",
+    serienummer: "",
+    garantie: "",
+  };
+  const f = form || leeg;
+  const zet = (k, v) => setForm({ ...f, [k]: v });
+
+  const opslaan = () => {
+    if (!f.naam.trim()) return;
+    voegToe("spullen", f);
+    setForm(null);
+  };
+
+  const gesorteerd = [...spullen].sort((a, b) => (Number(b.prijs) || 0) - (Number(a.prijs) || 0));
+
+  return (
+    <div>
+      <Print onderschrift="Handig bij diefstal of schade, en je verzekeraar vraagt hier altijd naar.">
+        <Bedrag
+          label={`Aanschafwaarde van je spullen, ${spullen.length} stuks`}
+          waarde={euro(totaal)}
+        />
+      </Print>
+
+      <div className="mb-5">
+        <Knop soort="vol" onClick={() => setForm(leeg)}>
+          Apparatuur toevoegen
+        </Knop>
+      </div>
+
+      {form && (
+        <Print>
+          <Veld label="Wat is het">
+            <Input
+              value={f.naam}
+              onChange={(e) => zet("naam", e.target.value)}
+              placeholder="Sony A7 IV, 50mm 1.8"
+            />
+          </Veld>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Aanschafprijs">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={f.prijs}
+                  onChange={(e) => zet("prijs", e.target.value)}
+                />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Gekocht op">
+                <Input type="date" value={f.datum} onChange={(e) => zet("datum", e.target.value)} />
+              </Veld>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <Veld label="Categorie">
+                <Input
+                  value={f.categorie}
+                  onChange={(e) => zet("categorie", e.target.value)}
+                  placeholder="Camera, lens, licht"
+                />
+              </Veld>
+            </div>
+            <div className="flex-1">
+              <Veld label="Garantie tot">
+                <Input
+                  type="date"
+                  value={f.garantie}
+                  onChange={(e) => zet("garantie", e.target.value)}
+                />
+              </Veld>
+            </div>
+          </div>
+          <Veld label="Serienummer">
+            <Input
+              value={f.serienummer}
+              onChange={(e) => zet("serienummer", e.target.value)}
+              placeholder="Optioneel"
+            />
+          </Veld>
+          <div className="flex gap-2">
+            <Knop soort="vol" onClick={opslaan}>
+              Opslaan
+            </Knop>
+            <Knop soort="weg" onClick={() => setForm(null)}>
+              Annuleren
+            </Knop>
+          </div>
+        </Print>
+      )}
+
+      {spullen.length === 0 && !form && (
+        <p className="text-sm" style={{ ...ui, color: C.soft }}>
+          Begin met je camera's en lenzen, dat is meteen het grootste deel.
+        </p>
+      )}
+
+      {gesorteerd.map((s) => {
+        const loopt = s.garantie && new Date(s.garantie) > new Date();
+        return (
+          <Regel
+            key={s.id}
+            titel={s.naam}
+            onder={
+              <>
+                {new Date(s.datum).toLocaleDateString("nl-NL", { month: "long", year: "numeric" })}
+                {s.categorie ? `, ${s.categorie}` : ""}
+                {s.serienummer ? `, ${s.serienummer}` : ""}
+                {s.garantie && (
+                  <span style={{ color: loopt ? C.goed : C.soft }}>
+                    {loopt
+                      ? `, garantie tot ${new Date(s.garantie).toLocaleDateString("nl-NL")}`
+                      : ", garantie verlopen"}
+                  </span>
+                )}
+              </>
+            }
+            rechts={euro(s.prijs)}
+            acties={
+              <Knop klein soort="weg" onClick={() => verwijder("spullen", s.id)}>
+                Verwijderen
+              </Knop>
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
