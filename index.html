@@ -237,46 +237,50 @@ function leesBedragen(tekst) {
   const btwRegels = [];
   let verlegd = false;
 
+  const isExclRegel = (l) => /subtotaal|totaal\s*(bedrag)?\s*excl|excl\.?\s*btw|bedrag\s*excl|netto/.test(l);
+  const isInclRegel = (l) =>
+    /totaal\s*(te betalen|incl|inclusief)|te betalen|totaalbedrag|eindtotaal|totaal\s*€|^totaal\b|bruto/.test(l);
+
   regels.forEach((r) => {
     const laag = r.toLowerCase();
     const b = bedragen(r);
-
     if (/btw\s*verlegd|reverse charge|verleggingsregeling/.test(laag)) verlegd = true;
 
-    // btw-regels: tarief en bedrag samen op één regel
-    if (/\bbtw\b|\bvat\b|omzetbelasting/.test(laag) &&
-        !/nummer|nr\.|\bid\b|number|verlegd|vrijgesteld/.test(laag)) {
-      const tm = laag.match(/(\d{1,2})(?:[.,]\d)?\s*%/);
+    const totaalregel = isExclRegel(laag) || isInclRegel(laag);
+
+    // btw-regel: alleen als het geen totaalregel is die toevallig het woord btw bevat
+    if (
+      (/\bbtw\b|\bvat\b|omzetbelasting/.test(laag)) &&
+      !/nummer|nr\.|\bid\b|number|verlegd|vrijgesteld/.test(laag) &&
+      !totaalregel
+    ) {
+      const tm = laag.match(/(\d{1,2})(?:[.,]\d{1,2})?\s*%/);
       const tarief = tm ? parseInt(tm[1], 10) : null;
-      if (b.length) {
-        btwRegels.push({ tarief, bedrag: b[b.length - 1] });
-      } else if (tarief !== null) {
-        btwRegels.push({ tarief, bedrag: null });
-      }
+      if (b.length) btwRegels.push({ tarief, bedrag: b[b.length - 1] });
+      else if (tarief !== null) btwRegels.push({ tarief, bedrag: null });
     }
 
     if (!b.length) return;
     const laatste = b[b.length - 1];
-
-    if (/subtotaal|totaal\s*excl|excl\.?\s*(btw|vat)|bedrag\s*excl|netto/.test(laag)) {
+    if (isExclRegel(laag)) {
       if (excl === null) excl = laatste;
-    } else if (/totaal\s*(te betalen|incl|inclusief)|te betalen|totaalbedrag|eindtotaal|totaal\s*€|^totaal\b|bruto/.test(laag)) {
+    } else if (isInclRegel(laag)) {
       if (incl === null || laatste > incl) incl = laatste;
     }
   });
 
-  const btwBedragen = btwRegels.filter((x) => x.bedrag !== null);
+  // een btw-bedrag kan nooit groter zijn dan het totaal, anders is het een verdwaalde regel
+  const grens = incl !== null ? incl * 0.6 : excl !== null ? excl * 0.6 : Infinity;
+  const btwBedragen = btwRegels.filter((x) => x.bedrag !== null && x.bedrag <= grens);
   const btwTotaal = btwBedragen.length ? btwBedragen.reduce((s, x) => s + x.bedrag, 0) : null;
-  const tarieven = [...new Set(btwRegels.map((x) => x.tarief).filter((t) => t !== null))];
+  const tarieven = [...new Set(btwRegels.map((x) => x.tarief).filter((t) => t !== null && t > 0))];
 
   if (incl === null && excl !== null && btwTotaal !== null) incl = excl + btwTotaal;
   if (incl === null) {
     const alle = regels.flatMap(bedragen);
     if (alle.length) incl = Math.max(...alle);
   }
-  if (excl === null && incl !== null && btwTotaal !== null && btwTotaal < incl) {
-    excl = incl - btwTotaal;
-  }
+  if (excl === null && incl !== null && btwTotaal !== null && btwTotaal < incl) excl = incl - btwTotaal;
 
   return { incl, excl, btwTotaal, tarieven, verlegd, meerdereTarieven: tarieven.length > 1 };
 }
@@ -844,7 +848,7 @@ function App() {
           className="text-sm mb-2"
           style={{ ...ui, color: C.soft, textAlign: "right" }}
         >
-          versie 4
+          versie 5
         </div>
 
         <header className="mb-7">
