@@ -9,6 +9,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   html, body { margin: 0; background: #FCFAF8; -webkit-font-smoothing: antialiased; }
   * { box-sizing: border-box; }
@@ -156,6 +157,301 @@ const HERINNERINGEN = [
   { v: 2880, l: "2 dagen vooraf" },
   { v: 10080, l: "1 week vooraf" },
 ];
+
+
+/* ---------- pdf uitlezen ---------- */
+
+function naarGetal(s) {
+  if (!s) return null;
+  let t = String(s).replace(/[^\d.,-]/g, "");
+  const laatsteKomma = t.lastIndexOf(",");
+  const laatstePunt = t.lastIndexOf(".");
+  if (laatsteKomma > -1 && laatstePunt > -1) {
+    if (laatsteKomma > laatstePunt) t = t.replace(/\./g, "").replace(",", ".");
+    else t = t.replace(/,/g, "");
+  } else if (laatsteKomma > -1) {
+    const na = t.length - laatsteKomma - 1;
+    t = na === 3 ? t.replace(/,/g, "") : t.replace(",", ".");
+  } else if (laatstePunt > -1) {
+    const na = t.length - laatstePunt - 1;
+    if (na === 3) t = t.replace(/\./g, "");
+  }
+  const n = parseFloat(t);
+  return isNaN(n) ? null : n;
+}
+
+const BEDRAG_RE = /(?:€\s*)?-?\d{1,3}(?:[.\s]\d{3})*(?:[.,]\d{2})|(?:€\s*)\d+(?:[.,]\d{2})?/g;
+
+function bedragenOpRegel(regel) {
+  const m = regel.match(BEDRAG_RE) || [];
+  return m.map(naarGetal).filter((x) => x !== null && Math.abs(x) > 0);
+}
+
+const MAANDEN = {
+  januari: 1, februari: 2, maart: 3, april: 4, mei: 5, juni: 6,
+  juli: 7, augustus: 8, september: 9, oktober: 10, november: 11, december: 12,
+  jan: 1, feb: 2, mrt: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, okt: 10, nov: 11, dec: 12,
+};
+
+function vindDatum(tekst) {
+  let m = tekst.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = tekst.match(/(\d{1,2})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{4})/);
+  if (m) return `${m[3]}-${String(m[2]).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  m = tekst.match(/(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})/);
+  if (m) {
+    const mnd = MAANDEN[m[2].toLowerCase()];
+    if (mnd) return `${m[3]}-${String(mnd).padStart(2, "0")}-${String(m[1]).padStart(2, "0")}`;
+  }
+  return null;
+}
+
+function vindNummer(tekst) {
+  const patronen = [
+    /factuur\s*(?:nummer|nr\.?|no\.?|#)?\s*[:#]?\s*(?=([A-Za-z0-9][A-Za-z0-9\-\/\.]{1,19}))/gi,
+    /invoice\s*(?:number|no\.?|#)?\s*[:#]?\s*(?=([A-Za-z0-9][A-Za-z0-9\-\/\.]{1,19}))/gi,
+  ];
+  for (const p of patronen) {
+    for (const m of tekst.matchAll(p)) {
+      const v = m[1].replace(/[.,:;]$/, "");
+      if (/\d/.test(v) && !/^(datum|date)$/i.test(v)) return v;
+    }
+  }
+  return null;
+}
+
+function vindTarief(tekst) {
+  const m = tekst.match(/(?:btw|vat)[^\n%]{0,20}?(\d{1,2})\s*%/i) || tekst.match(/(\d{1,2})\s*%\s*btw/i);
+  if (m) {
+    const t = parseInt(m[1], 10);
+    if ([21, 9, 0].includes(t)) return t;
+  }
+  return null;
+}
+
+function vindBedragen(tekst) {
+  const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
+  let incl = null, excl = null, btw = null;
+
+  regels.forEach((r) => {
+    const laag = r.toLowerCase();
+    const b = bedragenOpRegel(r);
+    if (!b.length) return;
+    const laatste = b[b.length - 1];
+    if (/totaal\s*(te betalen|incl|inclusief)|te betalen|totaalbedrag|eindtotaal|totaal\b/.test(laag) && !/excl/.test(laag)) {
+      if (incl === null || laatste > incl) incl = laatste;
+    }
+    if (/subtotaal|totaal\s*excl|excl\.?\s*btw|bedrag\s*excl/.test(laag)) {
+      if (excl === null) excl = laatste;
+    }
+    if (/\bbtw\b|\bvat\b/.test(laag) && !/nummer|nr|id|number/.test(laag)) {
+      if (btw === null) btw = laatste;
+    }
+  });
+
+  if (incl === null) {
+    const alle = regels.flatMap(bedragenOpRegel);
+    if (alle.length) incl = Math.max(...alle);
+  }
+  return { incl, excl, btw };
+}
+
+function leesFactuur(tekst) {
+  const { incl, excl, btw } = vindBedragen(tekst);
+  let tarief = vindTarief(tekst);
+  let bedragExcl = excl;
+
+  if (bedragExcl === null && incl !== null && btw !== null && btw < incl) {
+    bedragExcl = incl - btw;
+  }
+  if (tarief === null && bedragExcl && btw) {
+    const p = Math.round((btw / bedragExcl) * 100);
+    tarief = [21, 9, 0].includes(p) ? p : 21;
+  }
+  if (tarief === null) tarief = 21;
+  if (bedragExcl === null && incl !== null) bedragExcl = incl / (1 + tarief / 100);
+
+  const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
+  let klant = null;
+  const i = regels.findIndex((r) => /^(aan|factuur aan|t\.a\.v\.|klant|bill to|gefactureerd aan)\b/i.test(r));
+  if (i > -1) {
+    const zelfde = regels[i].replace(/^(aan|factuur aan|t\.a\.v\.|klant|bill to|gefactureerd aan)\b[:\s]*/i, "").trim();
+    klant = zelfde || regels[i + 1] || null;
+  }
+
+  return {
+    klant: klant || "",
+    nummer: vindNummer(tekst) || "",
+    datum: vindDatum(tekst) || new Date().toISOString().slice(0, 10),
+    bedrag: bedragExcl ? Math.round(bedragExcl * 100) / 100 : "",
+    tarief,
+  };
+}
+
+function leesUitgave(tekst, bestandsnaam) {
+  const { incl, btw } = vindBedragen(tekst);
+  let tarief = vindTarief(tekst);
+  if (tarief === null && incl && btw) {
+    const p = Math.round((btw / (incl - btw)) * 100);
+    tarief = [21, 9, 0].includes(p) ? p : 21;
+  }
+  if (tarief === null) tarief = 21;
+
+  const regels = tekst.split("\n").map((r) => r.trim()).filter(Boolean);
+  const leverancier =
+    regels.find((r) => r.length > 2 && r.length < 45 && /[a-zA-Z]{3}/.test(r) && !/factuur|invoice|datum|pagina/i.test(r)) ||
+    (bestandsnaam || "").replace(/\.pdf$/i, "");
+
+  return {
+    naam: leverancier,
+    bedrag: incl ? Math.round(incl * 100) / 100 : "",
+    tarief,
+    datum: vindDatum(tekst) || new Date().toISOString().slice(0, 10),
+    categorie: "",
+    zakelijk: true,
+  };
+}
+
+
+async function pdfTekst(file) {
+  const lib = window.pdfjsLib;
+  lib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const buf = await file.arrayBuffer();
+  const pdf = await lib.getDocument({ data: buf }).promise;
+  let uit = "";
+  for (let p = 1; p <= Math.min(pdf.numPages, 5); p++) {
+    const pagina = await pdf.getPage(p);
+    const inhoud = await pagina.getTextContent();
+    const regels = {};
+    inhoud.items.forEach((i) => {
+      const y = Math.round(i.transform[5]);
+      regels[y] = (regels[y] || "") + i.str + " ";
+    });
+    uit +=
+      Object.keys(regels)
+        .sort((a, b) => b - a)
+        .map((y) => regels[y].replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join("\n") + "\n";
+  }
+  return uit;
+}
+
+function Sleepvak({ uitleg, onKlaar }) {
+  const [bezig, setBezig] = useState(false);
+  const [fout, setFout] = useState("");
+  const [over, setOver] = useState(false);
+
+  const verwerk = async (bestand) => {
+    if (!bestand) return;
+    if (!/\.pdf$/i.test(bestand.name)) {
+      setFout("Dit werkt alleen met een PDF. Exporteer je factuur in Canva als PDF.");
+      return;
+    }
+    setFout("");
+    setBezig(true);
+    try {
+      const t = await pdfTekst(bestand);
+      if (!t || t.replace(/\s/g, "").length < 25) {
+        setFout("Uit deze PDF komt geen tekst. Waarschijnlijk is het een foto of een scan. Vul hem dan met de hand in.");
+      } else {
+        onKlaar(t, bestand.name);
+      }
+    } catch (e) {
+      setFout("Deze PDF kon ik niet openen. Vul hem met de hand in.");
+    }
+    setBezig(false);
+  };
+
+  const kies = () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "application/pdf";
+    inp.onchange = () => verwerk(inp.files[0]);
+    inp.click();
+  };
+
+  return (
+    <div className="mb-5">
+      <div
+        onClick={kies}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          verwerk(e.dataTransfer.files[0]);
+        }}
+        className="px-5 py-8 text-center cursor-pointer"
+        style={{
+          border: `1px dashed ${over ? C.ink : C.line}`,
+          background: over ? C.print : "transparent",
+        }}
+      >
+        <div className="text-base" style={{ ...ui, color: C.ink }}>
+          {bezig ? "Bezig met lezen" : uitleg}
+        </div>
+        <div className="text-sm mt-1" style={{ ...display, fontStyle: "italic", color: C.soft }}>
+          Sleep de PDF hierheen of klik om te kiezen
+        </div>
+      </div>
+      {fout && (
+        <p className="text-sm mt-2" style={{ ...ui, color: C.open }}>
+          {fout}
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+function groepeerPerKwartaal(items) {
+  const groepen = new Map();
+  items.forEach((x) => {
+    const kw = kwartaalVan(x.datum);
+    const sleutel = `${kw.jaar}-${kw.k}`;
+    if (!groepen.has(sleutel)) groepen.set(sleutel, { sleutel, kw, items: [] });
+    groepen.get(sleutel).items.push(x);
+  });
+  return [...groepen.values()]
+    .sort((a, b) => b.kw.jaar - a.kw.jaar || b.kw.k - a.kw.k)
+    .map((g) => ({
+      ...g,
+      items: g.items.sort((a, b) => new Date(b.datum) - new Date(a.datum)),
+    }));
+}
+
+function KwartaalKop({ kw, totaal, bijschrift }) {
+  const nu = kwartaalVan(vandaag());
+  const lopend = nu.jaar === kw.jaar && nu.k === kw.k;
+  return (
+    <div
+      className="flex items-baseline justify-between pt-6 pb-2"
+      style={{ borderBottom: `1px solid ${C.ink}` }}
+    >
+      <div className="text-xl" style={{ ...display, color: C.ink }}>
+        {kwartaalLabel(kw)}
+        {lopend && (
+          <span className="text-sm ml-2" style={{ ...ui, color: C.soft }}>
+            lopend kwartaal
+          </span>
+        )}
+      </div>
+      <div className="text-right">
+        <div className="text-base" style={{ ...display, color: C.ink }}>
+          {euro(totaal)}
+        </div>
+        <div className="text-sm" style={{ ...ui, color: C.soft }}>
+          {bijschrift}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ---------- bouwstenen ---------- */
 function Print({ children, onderschrift, nadruk }) {
@@ -685,13 +981,28 @@ function Facturen({ facturen, form, setForm, voegToe, wijzig, verwijder }) {
     setForm(null);
   };
 
-  const gesorteerd = [...facturen].sort((a, b) => new Date(b.datum) - new Date(a.datum));
+  const groepen = groepeerPerKwartaal(facturen);
 
   return (
     <div>
+      <Sleepvak
+        uitleg="Zet hier de factuur die je net hebt gestuurd"
+        onKlaar={(t) => {
+          const g = leesFactuur(t);
+          setForm({
+            ...leeg(),
+            ...g,
+            nummer: g.nummer || leeg().nummer,
+            vervaldatum: new Date(new Date(g.datum).getTime() + 14 * 86400000)
+              .toISOString()
+              .slice(0, 10),
+          });
+        }}
+      />
+
       <div className="flex gap-2 mb-5 flex-wrap">
         <Knop soort="vol" onClick={() => setForm(leeg())}>
-          Nieuwe factuur
+          Met de hand invullen
         </Knop>
       </div>
 
@@ -779,7 +1090,17 @@ function Facturen({ facturen, form, setForm, voegToe, wijzig, verwijder }) {
         </p>
       )}
 
-      {gesorteerd.map((x) => {
+      {groepen.map((groep) => (
+        <div key={groep.sleutel}>
+      <KwartaalKop
+        kw={groep.kw}
+        totaal={groep.items.reduce(
+          (s, f) => s + Number(f.bedrag) + btwUitExcl(f.bedrag, f.tarief),
+          0
+        )}
+        bijschrift={`${groep.items.length} factuur${groep.items.length > 1 ? "en" : ""}`}
+      />
+      {groep.items.map((x) => {
         const open = x.status !== "betaald";
         const laat = open && x.vervaldatum && new Date(x.vervaldatum) < new Date();
         return (
@@ -817,6 +1138,8 @@ function Facturen({ facturen, form, setForm, voegToe, wijzig, verwijder }) {
           />
         );
       })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -840,7 +1163,7 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, verwijder }) {
     setForm(null);
   };
 
-  const gesorteerd = [...uitgaven].sort((a, b) => new Date(b.datum) - new Date(a.datum));
+  const groepen = groepeerPerKwartaal(uitgaven);
   const totaalTerug = uitgaven
     .filter((u) => u.zakelijk !== false)
     .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0);
@@ -851,9 +1174,14 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, verwijder }) {
         <Bedrag label="Btw betaald op inkopen, alles bij elkaar" waarde={euro(totaalTerug)} kleur={C.goed} />
       </Print>
 
+      <Sleepvak
+        uitleg="Zet hier een inkoopfactuur of bon"
+        onKlaar={(t, naam) => setForm({ ...leeg, ...leesUitgave(t, naam) })}
+      />
+
       <div className="mb-5">
         <Knop soort="vol" onClick={() => setForm(leeg)}>
-          Uitgave toevoegen
+          Met de hand invullen
         </Knop>
       </div>
 
@@ -936,7 +1264,16 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, verwijder }) {
         </p>
       )}
 
-      {gesorteerd.map((u) => (
+      {groepen.map((groep) => (
+        <div key={groep.sleutel}>
+      <KwartaalKop
+        kw={groep.kw}
+        totaal={groep.items
+          .filter((u) => u.zakelijk !== false)
+          .reduce((s, u) => s + btwUitIncl(u.bedrag, u.tarief), 0)}
+        bijschrift="btw terug te vragen"
+      />
+      {groep.items.map((u) => (
         <Regel
           key={u.id}
           titel={u.naam}
@@ -950,6 +1287,8 @@ function Uitgaven({ uitgaven, form, setForm, voegToe, verwijder }) {
             </Knop>
           }
         />
+      ))}
+        </div>
       ))}
     </div>
   );
